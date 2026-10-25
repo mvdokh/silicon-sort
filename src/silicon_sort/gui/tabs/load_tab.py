@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -17,7 +23,7 @@ from silicon_sort.errors import RecordingError
 from silicon_sort.gui.widgets.parameters import combo, double_box, int_box
 from silicon_sort.gui.widgets.probe_view import ProbeMap
 from silicon_sort.gui.widgets.trace_view import TraceView
-from silicon_sort.io.binary import hints_from_binary_json, load_sidecar
+from silicon_sort.io.binary import hints_from_binary_json, load_sidecar, open_recording
 from silicon_sort.io.geometry import parse_msk
 from silicon_sort.preprocess.bad_channels import suggest_bad_channels
 
@@ -28,14 +34,25 @@ class LoadTab(QWidget):
         self.window = window
         self.form = QWidget()
         layout = QVBoxLayout(self.form)
-        form = QFormLayout()
-        layout.addLayout(form)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.preprocess_step = QPushButton("1  Preprocess")
+        self.mask_step = QPushButton("2  Mask")
+        for button in (self.preprocess_step, self.mask_step):
+            button.setCheckable(True)
+        self.preprocess_step.setChecked(True)
+        steps = QButtonGroup(self.form)
+        steps.setExclusive(True)
+        steps.addButton(self.preprocess_step, 0)
+        steps.addButton(self.mask_step, 1)
+        step_row = QHBoxLayout()
+        step_row.addWidget(self.preprocess_step, 1)
+        step_row.addWidget(self.mask_step, 1)
+        layout.addLayout(step_row)
+
         self.dat = QLineEdit()
         self.dat.setToolTip("Headerless interleaved binary, samples by channels.")
         self.cfg = QLineEdit()
         self.cfg.setToolTip("Probe geometry: a name line, then site channel x y in micrometers.")
-        form.addRow("Recording", _browse_row(self.dat, self._browse_dat))
-        form.addRow("Geometry", _browse_row(self.cfg, self._browse_cfg))
         self.n_channels = int_box(32, 1, 1024, "Number of channels stored in the binary file.")
         self.sampling_rate = double_box(30000, 1000, 100000, 1000, "Sampling rate in Hz.", decimals=1)
         self.dtype = combo(
@@ -45,17 +62,20 @@ class LoadTab(QWidget):
         )
         self.scale = double_box(0.195, 0.0, 1000, 0.001, "Microvolts per bit. Intan RHD2132 is 0.195.", decimals=4)
         self.offset = int_box(0, 0, 10**9, "Bytes to skip before the first sample.")
-        form.addRow("Channels", self.n_channels)
-        form.addRow("Sampling rate", self.sampling_rate)
-        form.addRow("Dtype", self.dtype)
-        form.addRow("µV / bit", self.scale)
-        form.addRow("Offset", self.offset)
+        recording = QFormLayout()
+        recording.addRow("Recording", _browse_row(self.dat, self._browse_dat))
+        recording.addRow("Geometry", _browse_row(self.cfg, self._browse_cfg))
+        recording.addRow("Channels", self.n_channels)
+        recording.addRow("Sampling rate", self.sampling_rate)
+        recording.addRow("Dtype", self.dtype)
+        recording.addRow("µV / bit", self.scale)
+        recording.addRow("Offset", self.offset)
+
         self.preprocess = combo(
             ["off", "on"],
             "off",
             "Off keeps the raw recording for viewing, detection, and clustering. On bandpasses and applies the common median reference first. You can leave this off and still scroll the raw traces.",
         )
-        form.addRow("Preprocessing", self.preprocess)
         self.highpass = double_box(300, 0.1, 10000, 50, "Highpass cutoff in Hz, used only when preprocessing is on.")
         self.lowpass = double_box(6000, 100, 20000, 100, "Lowpass cutoff in Hz.")
         self.reference = combo(
@@ -65,54 +85,88 @@ class LoadTab(QWidget):
         )
         self.local_radius = double_box(100, 10, 500, 10, "Radius in µm for local-group referencing.")
         self.whiten = combo(["on", "off"], "on", "ZCA whitening is applied during detection and is not written to the cache.")
-        form.addRow("Highpass Hz", self.highpass)
-        form.addRow("Lowpass Hz", self.lowpass)
-        form.addRow("Reference", self.reference)
-        form.addRow("Local radius", self.local_radius)
-        form.addRow("Whiten", self.whiten)
+        filt = QFormLayout()
+        filt.addRow("Preprocessing", self.preprocess)
+        filt.addRow("Highpass Hz", self.highpass)
+        filt.addRow("Lowpass Hz", self.lowpass)
+        filt.addRow("Reference", self.reference)
+        filt.addRow("Local radius", self.local_radius)
+        filt.addRow("Whiten", self.whiten)
+        self.run_button = QPushButton("Run preprocessing")
+        self.run_button.setToolTip("Optional. Bandpass and common-median reference the recording into the cache. Detection uses it only when preprocessing is on.")
 
-        self.show_button = QPushButton("Show recording")
-        self.show_button.setToolTip("Open the memmap, draw the probe, and show raw traces.")
+        preprocess_page = QWidget()
+        preprocess_layout = QVBoxLayout(preprocess_page)
+        preprocess_layout.setContentsMargins(0, 0, 0, 0)
+        preprocess_layout.addWidget(_group("Recording", recording))
+        filter_box = _group("Filter", filt)
+        filter_box.layout().addWidget(self.run_button)
+        preprocess_layout.addWidget(filter_box)
+        preprocess_layout.addStretch(1)
+
         self.suggest_button = QPushButton("Suggest bad channels")
         self.suggest_button.setToolTip("Flag flat, railed, or very noisy channels from a few raw chunks. Nothing is masked until you accept.")
         self.accept_button = QPushButton("Accept suggestions")
-        self.accept_button.setToolTip("Replace the current mask with the suggestion. Click sites afterwards to override.")
+        self.accept_button.setToolTip("Add the suggested channels to the mask. Channels you already masked stay masked.")
+        self.mask_selected_button = QPushButton("Mask selected")
+        self.mask_selected_button.setToolTip(
+            "Mask the channels selected on the traces. Click a trace to select it, and Shift-click or Ctrl-click to add more. "
+            "This adds to the current mask, including after you accept suggestions."
+        )
         self.clear_button = QPushButton("Clear mask")
         self.mask_button = QPushButton("Import .msk")
         self.mask_button.setToolTip("Import a 1-based channel T/F mask. T excludes the channel.")
-        self.run_button = QPushButton("Run preprocessing")
-        self.run_button.setToolTip("Optional. Bandpass and common-median reference the recording into the cache. Detection uses it only when preprocessing is on.")
+        note = QLabel("Click a trace to select it. Shift-click or Ctrl-click adds more. Masking adds to the channels you already chose.")
+        note.setWordWrap(True)
+        mask_layout = QVBoxLayout()
         for button in (
-            self.show_button,
             self.suggest_button,
             self.accept_button,
+            self.mask_selected_button,
             self.clear_button,
             self.mask_button,
-            self.run_button,
         ):
-            layout.addWidget(button)
-        layout.addStretch(1)
+            mask_layout.addWidget(button)
+        mask_page = QWidget()
+        mask_page_layout = QVBoxLayout(mask_page)
+        mask_page_layout.setContentsMargins(0, 0, 0, 0)
+        mask_page_layout.addWidget(note)
+        mask_page_layout.addWidget(_group("Bad channels", mask_layout))
+        mask_page_layout.addStretch(1)
+
+        self.steps = QStackedWidget()
+        self.steps.addWidget(preprocess_page)
+        self.steps.addWidget(mask_page)
+        steps.idClicked.connect(self.steps.setCurrentIndex)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.steps)
+        layout.addWidget(scroll, 1)
 
         self.probe = ProbeMap()
         self.probe.setMinimumWidth(150)
         self.probe.setMaximumWidth(230)
         self.trace = TraceView()
+        self.trace.multi_select = True
         self.view = QSplitter()
+        self.view.setHandleWidth(2)
+        self.view.setChildrenCollapsible(False)
         self.view.addWidget(self.trace)
         self.view.addWidget(self.probe)
         self.view.setStretchFactor(0, 1)
         self.view.setStretchFactor(1, 0)
-        self.view.setSizes([1100, 200])
+        self.view.setSizes([1100, 180])
 
-        self.show_button.clicked.connect(self.show_recording)
         self.suggest_button.clicked.connect(self.suggest)
         self.accept_button.clicked.connect(window.accept_suggestions)
+        self.mask_selected_button.clicked.connect(window.mask_selected)
         self.clear_button.clicked.connect(window.clear_mask)
         self.mask_button.clicked.connect(self.import_mask)
         self.run_button.clicked.connect(self.run_preprocess)
         self.probe.channelClicked.connect(window.toggle_mask)
         self.trace.maskRequested.connect(window.toggle_mask)
-        self.trace.channelSelected.connect(window.select_channel)
+        self.trace.selectionChanged.connect(window.pick_channel)
 
     def collect(self) -> None:
         settings = self.window.settings
@@ -156,20 +210,36 @@ class LoadTab(QWidget):
             pass
         self.apply_hints(hints)
         self.window.log(f"Recording {path}")
+        self.show_recording()
 
     def _browse_cfg(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Geometry", "", "Config (*.cfg);;All files (*)")
-        if path:
-            self.cfg.setText(path)
+        if not path:
+            return
+        self.cfg.setText(path)
+        if self.dat.text().strip():
+            self.show_recording()
 
     def show_recording(self) -> None:
         self.collect()
+        settings = self.window.settings
+        if not settings.dat_path:
+            return
         try:
-            recording, probe = self.window.pipeline.open()
+            if settings.cfg_path:
+                recording, probe = self.window.pipeline.open()
+                self.window.remember_geometry(probe)
+            else:
+                self.window.pipeline.ensure_meta()
+                if self.window.pipeline.recording is not None:
+                    self.window.pipeline.recording.close()
+                recording = open_recording(settings)
+                self.window.pipeline.recording = recording
+                self.window.pipeline.probe = None
+                self.window.remember_file_order(recording.n_channels)
         except Exception as exc:
             self.window.log(str(exc))
             return
-        self.window.remember_geometry(probe)
         self.trace.set_source(
             self.window.raw_reader,
             recording.n_samples,
@@ -217,6 +287,12 @@ class LoadTab(QWidget):
             return True
 
         self.window.run_task(work, lambda _result: self.window.log("Preprocessing cached"))
+
+
+def _group(title: str, body: QFormLayout | QVBoxLayout) -> QGroupBox:
+    box = QGroupBox(title)
+    box.setLayout(body)
+    return box
 
 
 def _browse_row(edit: QLineEdit, slot) -> QWidget:

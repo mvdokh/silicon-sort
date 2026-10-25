@@ -7,7 +7,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -16,8 +15,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QTabWidget,
-    QToolBar,
-    QWidget,
 )
 from PySide6.QtWidgets import QDockWidget
 
@@ -35,12 +32,18 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Silicon Sort")
         self.resize(1280, 800)
+        self.setDockOptions(
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+        )
         self.settings = PipelineSettings(dat_path=dat_path, cfg_path=cfg_path)
         self.settings.preprocess = False
         self.pipeline = Pipeline(self.settings)
         self.suggested = np.zeros(0, dtype=bool)
         self.display_order = np.zeros(0, dtype=int)
         self.selected = 0
+        self.picked: set[int] = set()
         self._worker: FunctionWorker | None = None
         self._filtered = None
 
@@ -51,6 +54,8 @@ class MainWindow(QMainWindow):
         self._stages = (self.load, self.detect, self.clusters, self.autosort)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setContentsMargins(0, 0, 0, 0)
         self.tabs.addTab(self.load.view, "1  Load")
         self.tabs.addTab(self.detect.view, "2  Detect")
         self.tabs.addTab(self.clusters.view, "3  Clusters")
@@ -61,19 +66,21 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         for stage in self._stages:
             self.stack.addWidget(stage.form)
-        dock = QDockWidget("Parameters", self)
-        dock.setWidget(self.stack)
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._parameters = QDockWidget("Parameters", self)
+        self._parameters.setWidget(self.stack)
+        self._parameters.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self._parameters.setMinimumWidth(300)
+        self._parameters.setMaximumWidth(420)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._parameters)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(400)
-        log_dock = QDockWidget("Log", self)
-        log_dock.setWidget(self.log_view)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, log_dock)
+        self._log = QDockWidget("Log", self)
+        self._log.setWidget(self.log_view)
+        self._log.setMaximumHeight(140)
+        self.splitDockWidget(self._parameters, self._log, Qt.Orientation.Vertical)
 
-        self._build_stage_bar()
         self._build_menu()
         self._build_status()
         self._shortcuts()
@@ -125,6 +132,12 @@ class MainWindow(QMainWindow):
             mapped = self._filtered
         return np.array(mapped[int(start) : int(stop)], dtype=np.float32, copy=True)
 
+    def remember_file_order(self, n_channels: int) -> None:
+        self.display_order = np.arange(int(n_channels), dtype=int)
+        self.clusters.set_channels(list(range(int(n_channels))))
+        if n_channels:
+            self.selected = int(n_channels) // 2
+
     def remember_geometry(self, probe) -> None:
         self.display_order = np.argsort(probe.positions[:, 1], kind="mergesort")
         visible = [int(channel) for channel in self.display_order if probe.present[int(channel)]]
@@ -166,9 +179,45 @@ class MainWindow(QMainWindow):
         if self.suggested.size == 0:
             self.log("No suggestion yet.")
             return
-        self.settings.set_mask(self.suggested)
+        mask = self.mask_array()
+        suggested = np.zeros(mask.shape, dtype=bool)
+        count = min(mask.size, int(self.suggested.size))
+        suggested[:count] = np.asarray(self.suggested[:count], dtype=bool)
+        self.settings.set_mask(mask | suggested)
         self.refresh_masks()
-        self.log(f"Accepted {int(self.suggested.sum())} suggested channels")
+        self.log(f"Mask now has {int((mask | suggested).sum())} channels")
+
+    def pick_channel(self, channel: int, additive: bool) -> None:
+        channel = int(channel)
+        if additive:
+            if channel in self.picked:
+                self.picked.discard(channel)
+            else:
+                self.picked.add(channel)
+        else:
+            self.picked = {channel}
+        self.selected = channel if channel in self.picked else (next(iter(self.picked)) if self.picked else channel)
+        self.load.trace.selected = self.selected
+        self.load.trace.set_highlight(self.picked)
+        self.refresh_probe()
+
+    def mask_selected(self) -> None:
+        if not self.picked:
+            self.log("Select channels on the traces first. Shift-click or Ctrl-click adds another.")
+            return
+        recording = self.pipeline.recording
+        if recording is None:
+            self.log("Load a recording before masking channels.")
+            return
+        mask = self.mask_array()
+        labels = []
+        for channel in sorted(self.picked):
+            if 0 <= channel < mask.size:
+                mask[channel] = True
+                labels.append(str(channel + 1))
+        self.settings.set_mask(mask)
+        self.refresh_masks()
+        self.log(f"Masked channels {', '.join(labels)}")
 
     def clear_mask(self) -> None:
         self.settings.mask = []
@@ -231,9 +280,9 @@ class MainWindow(QMainWindow):
         for button in (
             self.load.run_button,
             self.load.suggest_button,
-            self.load.show_button,
             self.detect.run_button,
             self.detect.benchmark_button,
+            self.detect.review.suggest_button,
             self.clusters.preview_button,
             self.autosort.run_button,
             self.autosort.export_button,
@@ -241,21 +290,12 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
 
+    def fit_layout(self) -> None:
+        self.resizeDocks([self._parameters], [360], Qt.Orientation.Horizontal)
+        self.resizeDocks([self._parameters, self._log], [900, 120], Qt.Orientation.Vertical)
+
     def _stage_changed(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
-        for label_index, label in enumerate(self.stage_labels):
-            label.setStyleSheet("color: #ffffff; font-weight: 600;" if label_index == index else "color: #8b93a1;")
-
-    def _build_stage_bar(self) -> None:
-        bar = QToolBar("Stages", self)
-        bar.setMovable(True)
-        self.stage_labels = []
-        for text in ("Load", "Detect", "Clusters", "Autosort"):
-            label = QLabel(f"  {text}  ")
-            self.stage_labels.append(label)
-            bar.addWidget(label)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
-        self._stage_changed(0)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -283,8 +323,8 @@ class MainWindow(QMainWindow):
     def _shortcuts(self) -> None:
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, lambda: self.active_trace().scroll(0.5))
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, lambda: self.active_trace().scroll(-0.5))
-        QShortcut(QKeySequence(Qt.Key.Key_Up), self, lambda: self.active_trace().scroll_channels(-1))
-        QShortcut(QKeySequence(Qt.Key.Key_Down), self, lambda: self.active_trace().scroll_channels(1))
+        QShortcut(QKeySequence(Qt.Key.Key_Up), self, lambda: self.active_trace().scroll_channels(1))
+        QShortcut(QKeySequence(Qt.Key.Key_Down), self, lambda: self.active_trace().scroll_channels(-1))
         QShortcut(QKeySequence(Qt.Key.Key_BracketRight), self, lambda: self.active_trace().zoom(1.25))
         QShortcut(QKeySequence(Qt.Key.Key_BracketLeft), self, lambda: self.active_trace().zoom(1 / 1.25))
         QShortcut(QKeySequence(Qt.Key.Key_M), self, lambda: self.toggle_mask(self.active_trace().selected))
@@ -346,8 +386,9 @@ class MainWindow(QMainWindow):
 
 
 def preload(window: MainWindow, dat_path: str, cfg_path: str) -> None:
-    if dat_path or cfg_path:
+    if dat_path:
         window.load.dat.setText(dat_path)
+    if cfg_path:
         window.load.cfg.setText(cfg_path)
-        if dat_path and cfg_path:
-            window.load.show_recording()
+    if dat_path:
+        window.load.show_recording()

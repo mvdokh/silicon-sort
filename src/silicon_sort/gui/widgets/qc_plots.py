@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
 
@@ -90,14 +91,45 @@ class PRPlot(pg.PlotWidget):
         self._curves: list[pg.PlotDataItem] = []
 
     def set_curve(self, thresholds: np.ndarray, precision: np.ndarray, recall: np.ndarray) -> None:
+        self.set_history([(thresholds, precision, recall)])
+
+    def set_history(self, runs: list[tuple[np.ndarray, np.ndarray, np.ndarray]], operating: float | None = None) -> None:
         for curve in self._curves:
             self.removeItem(curve)
+        for item in list(self.items()):
+            if isinstance(item, pg.InfiniteLine):
+                self.removeItem(item)
         self._curves.clear()
-        if thresholds.size == 0:
+        if not runs:
+            self.setTitle("")
             return
-        # Plot the largest amplitude row, which is the last one.
-        self._curves.append(self.plot(np.abs(thresholds), precision[-1], pen=pg.mkPen("#6ea8fe", width=2), name="Precision"))
-        self._curves.append(self.plot(np.abs(thresholds), recall[-1], pen=pg.mkPen("#98c379", width=2), name="Recall"))
+        for index, (thresholds, precision, _recall) in enumerate(runs):
+            if thresholds.size == 0 or precision.size == 0:
+                continue
+            latest = index == len(runs) - 1
+            color = "#6ea8fe" if latest else "#5c6370"
+            width = 2.4 if latest else 1.2
+            name = f"Run {index + 1}" if latest or len(runs) > 1 else "Precision"
+            self._curves.append(
+                self.plot(np.abs(thresholds), precision[-1], pen=pg.mkPen(color, width=width), name=name)
+            )
+        thresholds, _precision, recall = runs[-1]
+        if thresholds.size and recall.size:
+            self._curves.append(
+                self.plot(np.abs(thresholds), recall[-1], pen=pg.mkPen("#98c379", width=2, style=Qt.PenStyle.DashLine), name="Recall")
+            )
+        title = ""
+        if operating is not None and thresholds.size and runs[-1][1].size:
+            row = runs[-1][1][-1]
+            nearest = int(np.argmin(np.abs(np.abs(thresholds) - abs(float(operating)))))
+            title = f"Precision {float(row[nearest]):.2f} at {abs(float(thresholds[nearest])):.1f} MAD"
+            if len(runs) > 1 and runs[-2][1].size:
+                previous = runs[-2][1][-1]
+                earlier = int(np.argmin(np.abs(np.abs(runs[-2][0]) - abs(float(operating)))))
+                delta = float(row[nearest]) - float(previous[earlier])
+                title += f" ({delta:+.2f})"
+            self.addItem(pg.InfiniteLine(pos=abs(float(operating)), angle=90, pen=pg.mkPen("#e5c07b", width=1)))
+        self.setTitle(title)
 
 
 def _relax(plot: pg.PlotWidget) -> None:

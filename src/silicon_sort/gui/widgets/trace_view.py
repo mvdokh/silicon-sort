@@ -6,8 +6,8 @@ from collections.abc import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, Qt, Signal, QRectF
+from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QScrollBar, QSpinBox, QVBoxLayout, QWidget
 
 Reader = Callable[[int, int], np.ndarray]
@@ -17,11 +17,13 @@ class TraceView(QWidget):
     """Stacked traces for one time window of a memmap.
 
     The scrollbar, mouse wheel, and left/right arrows move that window through
-    the recording. Each row keeps its own color and channel number.
+    the recording. Drag the traces up or down to move through channels.
+    Each row keeps its own color and channel number.
     """
 
     maskRequested = Signal(int)
     channelSelected = Signal(int)
+    selectionChanged = Signal(int, bool)
     timePicked = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None):
@@ -61,10 +63,10 @@ class TraceView(QWidget):
         self.gap_box.setValue(1)
         self.gap_box.setToolTip(
             "Channel spacing. 1 fits every channel on screen. Raise it to spread them apart, "
-            "then use the bar on the right or Shift+scroll to move through one channel at a time."
+            "then drag the traces up or down, or Shift+scroll, to move through one channel at a time."
         )
-        self.channel_bar = QScrollBar(Qt.Orientation.Vertical)
-        self.channel_bar.setToolTip("Scroll through channels. Shift+scroll does the same.")
+        self.channel_bar = QScrollBar(Qt.Orientation.Vertical, self)
+        self.channel_bar.hide()
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
         controls.addWidget(QLabel("Window"))
@@ -77,9 +79,8 @@ class TraceView(QWidget):
         controls.addStretch(1)
         plot_row = QHBoxLayout()
         plot_row.setContentsMargins(0, 0, 0, 0)
-        plot_row.setSpacing(2)
+        plot_row.setSpacing(0)
         plot_row.addWidget(self.plot, 1)
-        plot_row.addWidget(self.channel_bar)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -94,6 +95,8 @@ class TraceView(QWidget):
         self.order = np.zeros(0, dtype=int)
         self.mask = np.zeros(0, dtype=bool)
         self.selected = 0
+        self.highlight: set[int] = set()
+        self.multi_select = False
         self.start_s = 0.0
         self.window_s = 0.1
         self.spikes_t: np.ndarray | None = None
@@ -107,11 +110,20 @@ class TraceView(QWidget):
         self.review_times = np.zeros(0, dtype=np.int64)
         self.review_channels = np.zeros(0, dtype=np.int32)
         self.review_labels = np.zeros(0, dtype=np.int8)
+        self.focused_channel = -1
+        self.focused_sample = -1
+        self.spike_pre_s = 0.0006
+        self.spike_post_s = 0.0012
         self.row_labels: list[str] = []
         self._curves: list[pg.PlotDataItem] = []
-        self._marks = pg.ScatterPlotItem(size=6, pxMode=True)
-        self.plot.addItem(self._marks)
+        self._boxes = SpikeBoxes()
+        self.plot.addItem(self._boxes)
+        self.plot.viewport().installEventFilter(self)
         self.plot.scene().sigMouseClicked.connect(self._on_click)
+        self._drag_last_y = 0.0
+        self._drag_total = 0.0
+        self._pan_remainder = 0.0
+        self._channel_dragged = False
         self.bar.valueChanged.connect(self._on_bar)
         self.channel_bar.valueChanged.connect(self._on_channel_bar)
         self.time_box.valueChanged.connect(self._on_time)
@@ -137,6 +149,8 @@ class TraceView(QWidget):
         self.mask = np.zeros(n_channels, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
         self.selected = int(self.order[len(self.order) // 2]) if self.order.size else 0
         self.start_s = 0.0
+        self.focused_channel = -1
+        self.focused_sample = -1
         self.refresh()
 
     def set_mask(self, mask: np.ndarray) -> None:
@@ -148,7 +162,11 @@ class TraceView(QWidget):
         times: np.ndarray | None,
         channels: np.ndarray | None,
         artifact: np.ndarray | None = None,
+        pre_s: float = 0.0006,
+        post_s: float = 0.0012,
     ) -> None:
+        self.spike_pre_s = max(0.0, float(pre_s))
+        self.spike_post_s = max(0.0, float(post_s))
         if times is None or channels is None or times.size == 0:
             self.spikes_t = None
             self.spikes_c = None
@@ -159,6 +177,10 @@ class TraceView(QWidget):
             self.spikes_artifact = (
                 np.zeros(times.shape, dtype=bool) if artifact is None else np.asarray(artifact, dtype=bool)
             )
+        self.refresh()
+
+    def set_highlight(self, channels) -> None:
+        self.highlight = {int(channel) for channel in channels}
         self.refresh()
 
     def set_review(self, times: np.ndarray, channels: np.ndarray, labels: np.ndarray) -> None:
@@ -174,13 +196,28 @@ class TraceView(QWidget):
     def reveal(self, channel: int) -> None:
         """Select a channel and scroll the stack until that row is on screen."""
         self.selected = int(channel)
-        rows = [int(item) for item in self.order]
-        if self.selected in rows:
-            row = rows.index(self.selected)
-            shown = self._shown_rows()
-            if row < self.channel_offset or row >= self.channel_offset + shown:
-                self.channel_offset = int(np.clip(row, 0, self._max_channel_offset()))
+        self._reveal_row(self.selected)
         self.refresh()
+
+    def focus_spike(self, channel: int, sample: int) -> None:
+        """Center the time window on one spike and mark it on the trace."""
+        self.selected = int(channel)
+        self.focused_channel = int(channel)
+        self.focused_sample = int(sample)
+        self._reveal_row(self.selected)
+        if self.sampling_rate > 0:
+            center = float(sample) / self.sampling_rate
+            self.start_s = float(np.clip(center - 0.5 * self.window_s, 0, self._max_start()))
+        self.refresh()
+
+    def _reveal_row(self, channel: int) -> None:
+        rows = [int(item) for item in self.order]
+        if int(channel) not in rows:
+            return
+        row = rows.index(int(channel))
+        shown = self._shown_rows()
+        if row < self.channel_offset or row >= self.channel_offset + shown:
+            self.channel_offset = int(np.clip(row, 0, self._max_channel_offset()))
 
     def scroll_channels(self, step: int) -> None:
         self.channel_offset = int(np.clip(self.channel_offset + int(step), 0, self._max_channel_offset()))
@@ -199,7 +236,7 @@ class TraceView(QWidget):
         for curve in self._curves:
             self.plot.removeItem(curve)
         self._curves.clear()
-        self._marks.setData([])
+        self._boxes.set_boxes(np.zeros((0, 4)), [])
         self._sync_bar()
         if self.reader is None or self.n_channels == 0 or self.n_samples == 0:
             self.row_labels = []
@@ -223,7 +260,8 @@ class TraceView(QWidget):
             self.row_labels.append(label)
             offset = row * self.spacing
             ticks.append((offset, label))
-            color = _channel_color(channel, masked=bool(self.mask[channel]), selected=channel == self.selected)
+            picked = channel in self.highlight if self.multi_select else channel == self.selected
+            color = _channel_color(channel, masked=bool(self.mask[channel]), selected=picked)
             width = 2.4 if channel == self.selected else 1.15
             curve = self.plot.plot(time, decimated[:, channel] + offset, pen=pg.mkPen(color, width=width))
             self._curves.append(curve)
@@ -249,22 +287,30 @@ class TraceView(QWidget):
         self._sync_channel_bar(rows, shown)
         if self.spikes_t is not None and self.spikes_c is not None:
             in_window = (self.spikes_t >= start) & (self.spikes_t < stop)
-            xs = []
-            ys = []
-            brushes = []
+            rects = []
+            colors = []
             artifacts = (
                 self.spikes_artifact[in_window]
                 if self.spikes_artifact is not None
                 else np.zeros(int(in_window.sum()), dtype=bool)
             )
+            width = self.spike_pre_s + self.spike_post_s
             for sample, channel, artifact in zip(self.spikes_t[in_window], self.spikes_c[in_window], artifacts, strict=True):
                 if int(channel) not in row_of:
                     continue
-                xs.append(float(sample) / self.sampling_rate)
-                ys.append(row_of[int(channel)] * self.spacing)
-                brushes.append(pg.mkBrush(_spike_color(bool(artifact), self._review_label(int(channel), int(sample)))))
-            if xs:
-                self._marks.setData(x=np.array(xs), y=np.array(ys), brush=brushes, pen=None)
+                focused = int(channel) == self.focused_channel and int(sample) == self.focused_sample
+                row = row_of[int(channel)]
+                rects.append(
+                    (
+                        float(sample) / self.sampling_rate - self.spike_pre_s,
+                        (row - 0.5) * self.spacing,
+                        width,
+                        self.spacing,
+                    )
+                )
+                colors.append("#ffd166" if focused else _spike_color(bool(artifact), self._review_label(int(channel), int(sample))))
+            if rects:
+                self._boxes.set_boxes(np.asarray(rects, dtype=float), colors)
 
     def _on_time(self, value: float) -> None:
         self.window_s = float(np.clip(value / 1000.0, 0.005, 5.0))
@@ -277,8 +323,11 @@ class TraceView(QWidget):
         self.refresh()
 
     def _on_gap(self, value: int) -> None:
+        shown_before = self._shown_rows()
+        top = self.channel_offset + shown_before - 1
         self.channel_gap = max(1, int(value))
-        self.channel_offset = int(np.clip(self.channel_offset, 0, self._max_channel_offset()))
+        shown = self._shown_rows()
+        self.channel_offset = int(np.clip(top - shown + 1, 0, max(0, len(self.order) - shown)))
         self.refresh()
 
     def _on_auto_scale(self) -> None:
@@ -312,7 +361,7 @@ class TraceView(QWidget):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.zoom(0.8 if delta > 0 else 1.25)
         elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            self.scroll_channels(-1 if delta > 0 else 1)
+            self.scroll_channels(1 if delta > 0 else -1)
         else:
             self.scroll(-0.2 if delta > 0 else 0.2)
         event.accept()
@@ -337,7 +386,8 @@ class TraceView(QWidget):
     def _on_channel_bar(self, value: int) -> None:
         if self._updating_bar:
             return
-        self.channel_offset = int(value)
+        maximum = self.channel_bar.maximum()
+        self.channel_offset = int(maximum - value)
         self.refresh()
 
     def _sync_channel_bar(self, rows: int, shown: int) -> None:
@@ -346,7 +396,7 @@ class TraceView(QWidget):
         self.channel_bar.setRange(0, maximum)
         self.channel_bar.setPageStep(max(1, shown))
         self.channel_bar.setSingleStep(1)
-        self.channel_bar.setValue(int(np.clip(self.channel_offset, 0, maximum)))
+        self.channel_bar.setValue(int(np.clip(maximum - self.channel_offset, 0, maximum)))
         self._updating_bar = False
 
     def _shown_rows(self) -> int:
@@ -356,14 +406,50 @@ class TraceView(QWidget):
     def _max_channel_offset(self) -> int:
         return max(0, len(self.order) - self._shown_rows())
 
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        try:
+            viewport = self.plot.viewport()
+        except RuntimeError:
+            return False
+        if watched is viewport:
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_last_y = float(event.position().y())
+                self._drag_total = 0.0
+                self._pan_remainder = 0.0
+                self._channel_dragged = False
+            elif event.type() == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
+                y = float(event.position().y())
+                delta = y - self._drag_last_y
+                self._drag_last_y = y
+                self._drag_total += delta
+                if abs(self._drag_total) > 6:
+                    self._channel_dragged = True
+                    self._pan_channels(delta)
+        return super().eventFilter(watched, event)
+
+    def _pan_channels(self, delta_px: float) -> None:
+        row_px = max(12.0, self.plot.height() / max(1, self._shown_rows()))
+        self._pan_remainder += delta_px
+        steps = int(self._pan_remainder / row_px)
+        if steps == 0:
+            return
+        self._pan_remainder -= steps * row_px
+        self.scroll_channels(steps)
+
     def _on_click(self, event) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or self.spacing <= 0 or self.order.size == 0:
+        dragged = self._channel_dragged
+        self._channel_dragged = False
+        if dragged or event.button() != Qt.MouseButton.LeftButton or self.spacing <= 0 or self.order.size == 0:
             return
         point = self.plot.plotItem.vb.mapSceneToView(event.scenePos())
         row = int(np.clip(round(point.y() / self.spacing), 0, self.order.size - 1))
         self.selected = int(self.order[row])
         sample = int(np.clip(round(float(point.x()) * self.sampling_rate), 0, max(self.n_samples - 1, 0)))
-        self.channelSelected.emit(self.selected)
+        additive = bool(event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier))
+        if self.multi_select:
+            self.selectionChanged.emit(self.selected, additive)
+        else:
+            self.channelSelected.emit(self.selected)
         self.timePicked.emit(self.selected, sample)
         self.refresh()
 
@@ -382,6 +468,45 @@ class _TracePlot(pg.PlotWidget):
         self.owner._wheel(event)
 
 
+class SpikeBoxes(pg.GraphicsObject):
+    """Translucent rectangles covering each spike for the full height of its channel."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.boxes = np.zeros((0, 4), dtype=float)
+        self.colors: list[str] = []
+        self._bounds = QRectF()
+        self.setZValue(-10)
+
+    def set_boxes(self, rects: np.ndarray, colors: list[str]) -> None:
+        self.boxes = np.asarray(rects, dtype=float).reshape(-1, 4)
+        self.colors = list(colors)
+        self.prepareGeometryChange()
+        if self.boxes.size == 0:
+            self._bounds = QRectF()
+        else:
+            x0 = float(self.boxes[:, 0].min())
+            y0 = float(self.boxes[:, 1].min())
+            x1 = float((self.boxes[:, 0] + self.boxes[:, 2]).max())
+            y1 = float((self.boxes[:, 1] + self.boxes[:, 3]).max())
+            self._bounds = QRectF(x0, y0, max(x1 - x0, 1e-9), max(y1 - y0, 1e-9))
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._bounds
+
+    def paint(self, painter, *args) -> None:
+        for (x, y, width, height), name in zip(self.boxes, self.colors, strict=True):
+            color = QColor(name)
+            fill = QColor(color)
+            edge = QColor(color)
+            fill.setAlpha(150 if name == "#ffd166" else 70)
+            edge.setAlpha(220)
+            painter.setPen(QPen(edge, 0))
+            painter.setBrush(QBrush(fill))
+            painter.drawRect(QRectF(float(x), float(y), float(width), float(height)))
+
+
 def _spike_color(artifact: bool, review: int) -> str:
     if review > 0:
         return "#98c379"
@@ -392,6 +517,8 @@ def _spike_color(artifact: bool, review: int) -> str:
 
 def _channel_color(channel: int, masked: bool, selected: bool) -> QColor:
     hue = int((channel * 137.508) % 360)
+    if masked and selected:
+        return QColor.fromHsv(hue, 90, 160)
     if masked:
         return QColor.fromHsv(hue, 50, 90)
     if selected:

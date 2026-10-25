@@ -15,5 +15,6 @@ def launch(dat_path: str = "", cfg_path: str = "") -> int:
     apply_dark_theme(app)
     window = MainWindow(dat_path, cfg_path)
     preload(window, dat_path, cfg_path)
-    window.show()
+    window.showMaximized()
+    window.fit_layout()
     return app.exec()

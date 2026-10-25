@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QFormLayout, QPushButton, QSplitter, QVBoxLayout, 
 from silicon_sort.detect.benchmark import benchmark_excerpt
 from silicon_sort.gui.widgets.event_review import EventReview
 from silicon_sort.gui.widgets.parameters import combo, double_box, int_box
-from silicon_sort.gui.widgets.qc_plots import HistogramPlot
+from silicon_sort.gui.widgets.qc_plots import HistogramPlot, PRPlot
 from silicon_sort.gui.widgets.trace_view import TraceView
 
 
@@ -72,13 +72,22 @@ class DetectTab(QWidget):
         self.review = EventReview(window)
         self.histogram = HistogramPlot()
         self.histogram.setMinimumWidth(260)
+        self.precision = PRPlot()
+        self.precision.setMinimumHeight(160)
+        self._benchmark_history: list = []
         side = QSplitter(Qt.Orientation.Vertical)
+        side.setHandleWidth(2)
+        side.setChildrenCollapsible(False)
         side.addWidget(self.review)
         side.addWidget(self.histogram)
+        side.addWidget(self.precision)
         side.setStretchFactor(0, 3)
-        side.setStretchFactor(1, 2)
-        side.setSizes([420, 240])
+        side.setStretchFactor(1, 1)
+        side.setStretchFactor(2, 2)
+        side.setSizes([420, 180, 220])
         self.view = QSplitter(Qt.Orientation.Horizontal)
+        self.view.setHandleWidth(2)
+        self.view.setChildrenCollapsible(False)
         self.view.addWidget(self.trace)
         self.view.addWidget(side)
         self.view.setStretchFactor(0, 3)
@@ -129,7 +138,13 @@ class DetectTab(QWidget):
         mad = self.window.pipeline.noise_mad
         if mad is not None:
             self.trace.set_thresholds(np.abs(self.window.settings.threshold_mad) * mad)
-        self.trace.set_spikes(spikes.times, spikes.channels, spikes.artifact)
+        self.trace.set_spikes(
+            spikes.times,
+            spikes.channels,
+            spikes.artifact,
+            pre_s=float(self.window.settings.waveform_pre_ms) * 1e-3,
+            post_s=float(self.window.settings.waveform_post_ms) * 1e-3,
+        )
         self.sync_review_marks()
         self.review.show_channel(self._channel_id if self._channel_id < recording.n_channels else 0)
         clean = spikes.clean()
@@ -186,6 +201,11 @@ class DetectTab(QWidget):
         self.window.run_task(work, self._show_curve)
 
     def _show_curve(self, curve) -> None:
+        self._benchmark_history.append(curve)
+        self.precision.set_history(
+            [(run.thresholds, run.precision, run.recall) for run in self._benchmark_history],
+            operating=abs(float(self.window.settings.threshold_mad)),
+        )
         best = int(np.argmax(curve.recall[-1])) if curve.recall.size else 0
         if curve.recall.size:
             self.window.log(

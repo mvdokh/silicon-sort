@@ -39,12 +39,20 @@ def apply_dark_theme(app: QApplication) -> None:
             background: #2e3440; border: 1px solid #465064; border-radius: 4px; padding: 6px 10px;
         }
         QPushButton:hover { background: #3a4252; }
+        QPushButton:checked { background: #243044; color: #ffffff; border: 1px solid #6ea8fe; }
         QPushButton:disabled { color: #808898; }
-        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+        QLineEdit, QComboBox {
             background: #14161b; border: 1px solid #3a4150; border-radius: 4px; padding: 3px 6px;
         }
-        QTabBar::tab { padding: 8px 16px; }
+        QSpinBox, QDoubleSpinBox {
+            background: #14161b; border: 1px solid #3a4150; border-radius: 0px; padding: 3px 6px;
+        }
+        QTabWidget::pane { border: none; margin: 0; padding: 0; }
+        QTabBar::tab { padding: 4px 12px; }
         QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #6ea8fe; }
+        QSplitter::handle:horizontal { width: 2px; background: #1b1d22; }
+        QSplitter::handle:vertical { height: 2px; background: #1b1d22; }
+        QMainWindow::separator { width: 2px; height: 2px; background: #1b1d22; }
         QHeaderView::section { background: #252830; padding: 4px; border: none; }
         QDockWidget::title { background: #252830; padding: 6px; }
         """

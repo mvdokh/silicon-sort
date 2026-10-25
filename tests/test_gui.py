@@ -11,10 +11,13 @@ os.environ.setdefault("QT_OPENGL", "software")
 
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from silicon_sort.detect.benchmark import BenchmarkCurve
+from silicon_sort.detect.detect import SpikeIndex
 from silicon_sort.gui.main_window import MainWindow
 from silicon_sort.gui.theme import apply_dark_theme
 from silicon_sort.synthetic import write_poly2_cfg, write_recording
@@ -37,6 +40,59 @@ def _wait(window: MainWindow, timeout_s: float = 30.0) -> None:
             raise AssertionError(window.log_view.toPlainText() or "stage timed out")
         time.sleep(0.01)
     QApplication.processEvents()
+
+
+def test_load_parameters_are_split_into_preprocess_and_mask():
+    _app()
+    window = MainWindow()
+    window.show()
+    QApplication.processEvents()
+
+    def page_of(widget) -> int:
+        page = widget
+        while page is not None and window.load.steps.indexOf(page) < 0:
+            page = page.parentWidget()
+        return window.load.steps.indexOf(page)
+
+    assert window.load.steps.currentIndex() == 0
+    assert window.load.preprocess_step.isChecked()
+    assert page_of(window.load.dat) == 0
+    assert page_of(window.load.run_button) == 0
+    assert page_of(window.load.highpass) == 0
+    assert page_of(window.load.suggest_button) == 1
+    assert page_of(window.load.mask_selected_button) == 1
+    window.load.mask_step.click()
+    QApplication.processEvents()
+    assert window.load.steps.currentIndex() == 1
+    assert window.load.mask_step.isChecked()
+    window.load.preprocess_step.click()
+    QApplication.processEvents()
+    assert window.load.steps.currentIndex() == 0
+    window.close()
+
+
+def test_benchmark_plot_keeps_each_run():
+    _app()
+    window = MainWindow()
+    first = BenchmarkCurve(
+        amplitudes=np.array([80.0]),
+        thresholds=np.array([-4.0, -6.0]),
+        precision=np.array([[0.40, 0.70]]),
+        recall=np.array([[0.90, 0.50]]),
+    )
+    second = BenchmarkCurve(
+        amplitudes=np.array([80.0]),
+        thresholds=np.array([-4.0, -6.0]),
+        precision=np.array([[0.55, 0.86]]),
+        recall=np.array([[0.88, 0.48]]),
+    )
+    window.settings.threshold_mad = -6.0
+    window.detect._show_curve(first)
+    window.detect._show_curve(second)
+    assert len(window.detect.precision._curves) == 3
+    assert "0.86" in window.detect.precision.plotItem.titleLabel.text
+    assert "+0.16" in window.detect.precision.plotItem.titleLabel.text
+    window.close()
 
 
 def test_window_loads_masks_and_stays_responsive(tmp_path: Path):
@@ -66,8 +122,10 @@ def test_window_loads_masks_and_stays_responsive(tmp_path: Path):
     window.load.trace.time_box.setValue(100)
     window.load.trace.gap_box.setValue(8)
     assert window.load.trace._shown_rows() == 1
-    window.load.trace.channel_bar.setValue(3)
-    assert window.load.trace.channel_offset == 3
+    assert window.load.trace.channel_offset == 7
+    assert window.load.trace.channel_bar.value() == 0
+    window.load.trace.channel_bar.setValue(window.load.trace.channel_bar.maximum())
+    assert window.load.trace.channel_offset == 0
     window.load.trace.gap_box.setValue(1)
     assert window.detect.view.orientation() == Qt.Orientation.Horizontal
     assert window.detect.view.widget(0) is window.detect.trace
@@ -126,4 +184,112 @@ def test_window_loads_masks_and_stays_responsive(tmp_path: Path):
     _wait(window)
     assert window.pipeline.cache().filtered_path.is_file()
     assert 3 in window.settings.mask
+    window.close()
+
+
+def test_dat_stays_in_file_order_until_cfg(tmp_path: Path):
+    _app()
+    dat = tmp_path / "session.dat"
+    cfg = tmp_path / "probe.cfg"
+    write_recording(dat, n_channels=8, sampling_rate=30000, duration_s=0.05, seed=1)
+    cfg.write_text(
+        "reversed\n" + "\n".join(f"{index + 1} {index + 1} 0.00 {70 - index * 10:.2f}" for index in range(8)) + "\n",
+        encoding="utf-8",
+    )
+    window = MainWindow()
+    window.load.n_channels.setValue(8)
+    window.load.sampling_rate.setValue(30000)
+    window.load.dat.setText(str(dat))
+    window.load.show_recording()
+    QApplication.processEvents()
+    assert list(window.display_order) == list(range(8))
+    assert window.pipeline.probe is None
+
+    window.load.cfg.setText(str(cfg))
+    window.load.show_recording()
+    QApplication.processEvents()
+    assert list(window.display_order) == list(range(7, -1, -1))
+    window.close()
+
+
+def test_review_draws_every_waveform_and_seeks_the_trace(tmp_path: Path):
+    _app()
+    dat = tmp_path / "session.dat"
+    cfg = tmp_path / "probe.cfg"
+    write_poly2_cfg(cfg, n_channels=8)
+    write_recording(dat, n_channels=8, sampling_rate=30000, duration_s=0.25, seed=1)
+    window = MainWindow(str(dat), str(cfg))
+    window.load.n_channels.setValue(8)
+    window.load.sampling_rate.setValue(30000)
+    window.load.scale.setValue(0.195)
+    window.show()
+    window.load.show_recording()
+    times = np.linspace(800, 6800, 30).astype(np.int64)
+    window.pipeline.spikes = SpikeIndex(
+        times,
+        np.zeros(times.size, dtype=np.int32),
+        np.full(times.size, -80.0, dtype=np.float32),
+        np.zeros(times.size, dtype=bool),
+    )
+    window.detect.show_detection()
+    review = window.detect.review
+    trace = window.detect.trace
+    assert review._waves.shape[0] == 30
+    assert np.isfinite(review._waves).all()
+    assert len(review._curves) == 2
+
+    review._step_event(1)
+    sample = int(review._events[1][0])
+    center = sample / trace.sampling_rate
+    assert review.selected == 1
+    assert trace.focused_sample == sample
+    assert trace.focused_channel == 0
+    assert trace.start_s <= center <= trace.start_s + trace.window_s
+
+    review._step_event(-1)
+    assert trace.focused_sample == int(review._events[0][0])
+
+    target = 17
+    pre = max(1, int(round(0.6e-3 * trace.sampling_rate)))
+    column = int(np.argmax(np.ptp(review._waves, axis=0)))
+    gap = np.abs(review._waves[:, column] - review._waves[target, column])
+    gap[target] = np.inf
+    if float(gap.min()) <= 1e-4:
+        column = pre
+    time_ms = (column - pre) / trace.sampling_rate * 1000.0
+    review.pick_waveform(time_ms, float(review._waves[target, column]))
+    picked = int(review._events[review.selected][0])
+    center = picked / trace.sampling_rate
+    assert review.selected == target
+    assert trace.focused_sample == picked
+    assert trace.start_s <= center <= trace.start_s + trace.window_s
+    boxes = trace._boxes.boxes
+    assert boxes.shape[0] > 0
+    assert np.allclose(boxes[:, 2], 0.0006 + 0.0012)
+    assert np.allclose(boxes[:, 3], trace.spacing)
+    window.close()
+
+
+def test_selected_channels_stay_in_the_mask(tmp_path: Path):
+    _app()
+    dat = tmp_path / "session.dat"
+    cfg = tmp_path / "probe.cfg"
+    write_poly2_cfg(cfg, n_channels=8)
+    write_recording(dat, n_channels=8, sampling_rate=30000, duration_s=0.05, seed=1)
+    window = MainWindow(str(dat), str(cfg))
+    window.load.n_channels.setValue(8)
+    window.load.sampling_rate.setValue(30000)
+    window.load.scale.setValue(0.195)
+    window.load.show_recording()
+    window.pick_channel(1, False)
+    window.pick_channel(4, True)
+    window.mask_selected()
+    assert set(window.settings.mask) == {1, 4}
+    window.suggested = np.zeros(8, dtype=bool)
+    window.suggested[2] = True
+    window.accept_suggestions()
+    assert set(window.settings.mask) == {1, 2, 4}
+    window.pick_channel(6, False)
+    window.mask_selected()
+    assert set(window.settings.mask) == {1, 2, 4, 6}
     window.close()

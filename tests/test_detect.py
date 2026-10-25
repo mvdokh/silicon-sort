@@ -188,6 +188,38 @@ def test_review_marks_drop_false_positives_and_keep_missed_spikes():
     assert 1800 not in kept
 
 
+def test_suggestions_flag_bad_shapes_and_align_a_click():
+    from silicon_sort.detect.suggestions import align_click, suggest_channel
+
+    fs = 10000.0
+    n_samples = 4000
+    data = np.zeros(n_samples, dtype=np.float32)
+    wave = synthetic_biphasic(8, 16, width=2.0)
+    for center in (400, 800, 1200, 1600, 2400, 2800):
+        start = center - int(np.argmin(wave))
+        data[start : start + wave.size] += 80.0 * wave
+    bump = np.hanning(24).astype(np.float32)
+    data[2000 : 2000 + bump.size] += bump * 70.0
+    missed = 3200
+    start = missed - int(np.argmin(wave))
+    data[start : start + wave.size] += 50.0 * wave
+    settings = _settings(fs, waveform_pre_ms=0.8, waveform_post_ms=1.6, dead_time_ms=0.5, chunk_seconds=0.2, n_channels=1)
+    times = np.array([400, 800, 1200, 1600, 2000, 2400, 2800], dtype=np.int64)
+    artifacts, misses, template = suggest_channel(
+        data,
+        times,
+        np.zeros(times.size, dtype=bool),
+        settings,
+        mad=4.0,
+    )
+    assert 2000 in set(artifacts.tolist())
+    assert 400 not in set(artifacts.tolist())
+    assert missed in set(misses.tolist()) or any(abs(int(time) - missed) <= 5 for time in misses)
+    assert template is not None
+    clicked = align_click(data, 400 + 6, template, int(np.argmin(wave)), -1.0, 12)
+    assert abs(clicked - 400) <= 2
+
+
 def test_match_events_counts_false_positives():
     score = match_events(
         np.array([10, 50, 90]),
