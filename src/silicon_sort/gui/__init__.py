@@ -1,0 +1,1 @@
+"""Desktop interface. Import ``silicon_sort.gui.app`` to launch the window."""
