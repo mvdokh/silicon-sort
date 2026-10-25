@@ -49,22 +49,27 @@ The waveform panel draws every spike on the current channel, not a short window 
 | --- | --- |
 | Previous / next channel | Moves in display order and centers the trace on that channel's first event. |
 | Previous / next event | Moves the waveform and centers the trace on that time. The spike on the trace is gold. |
+| Click a spike on the trace | Opens the event on that channel closest to the click, and highlights it on the trace. |
+| Click | What the click does. **Select closest** only opens the event. **Mark good** or **Mark bad** stores it as an example. **Add missed spike** snaps the click to the channel template, draws a teal box around that spike, and uses the same color in the waveform view. |
 | Suggest | Scores the current channel. |
 | Suggested artifacts | Detections that do not match the channel template, plus events already flagged as artifacts. |
 | Suggested misses | Times where the same template matches below the detection threshold and no spike was kept. |
-| Good | Keep this spike. On the next detection, similar missed shapes are searched for. |
-| Bad | Drop this spike. Other spikes on this channel with nearly the same shape (cosine at least 0.9 to the bad median) are dropped too, unless they are closer to a good template. |
+| Good | Store the event on screen as a good example. |
+| Bad | Store the event on screen as a bad example. |
 | Clear | Remove the mark. |
-| Click a trace to add a missed spike | The click is aligned to the channel template, then stored as a good spike. |
-| Detect again | Runs detection with the marks. |
+| Bad examples | **Marked only** drops the bad examples. **Similar on this channel** also drops spikes on that channel whose shape matches (cosine at least 0.9), unless they are closer to a good example. **Similar on every channel** uses the same test on the whole probe. |
+| Good examples | **Marked only** keeps the good examples. **Similar on this channel** also searches that channel below threshold for the same shape. **Similar on every channel** runs that search on every unmasked channel. |
+| Detect again | Runs detection with the examples and the two choices above. |
 
 **Suggest** does not train a network. It takes the median waveform of the spikes that resemble each other, flags detections whose cosine to that waveform is below 0.75, and scans the channel at a lower threshold (45% of the detection threshold, and not above the template-match fraction) for up to 24 misses.
 
 ## Benchmark
 
-**Run benchmark** copies about two seconds of the signal, blanks spikes that were already detected, and plants a known waveform at several amplitudes. It then sweeps the threshold and records precision and recall.
+**Run benchmark** scores about one second of the recording. It uses spikes already detected, and it does not detect the rest of the file again. It blanks those spikes, plants a known waveform at several amplitudes, and sweeps the threshold.
 
-The plot under the histogram draws one precision curve per run and the recall of the latest run. The title is the precision at your current threshold, and the change from the previous run when there is one. The gold line is that threshold. This score is on the planted excerpt. It is a check that the detector settings still recover a known shape, not a count of your review marks.
+The precision and recall plot sits under **Run detection** and **Run benchmark**. It draws one precision curve per run and the recall of the latest run. The title is the precision at your current threshold, and the change from the previous run when there is one. The gold line is that threshold. This score is on the planted excerpt. It is a check that the detector settings still recover a known shape, not a count of your review marks.
+
+**Detect again** reuses that first pass when only the examples changed, then applies the good and bad marks. It detects the whole file again only when the recording or the detector settings change.
 
 ## Traces
 

@@ -7,10 +7,14 @@ from collections.abc import Callable
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, Qt, Signal, QRectF
+
+from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
 from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QScrollBar, QSpinBox, QVBoxLayout, QWidget
 
 Reader = Callable[[int, int], np.ndarray]
+
+ADDED_MISS_COLOR = "#56b6c2"
 
 
 class TraceView(QWidget):
@@ -31,13 +35,9 @@ class TraceView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plot = _TracePlot(self)
         self.plot.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.plot.showGrid(x=True, y=False, alpha=0.12)
+        style_plot(self.plot)
         self.plot.setLabel("bottom", "Time", units="s")
         self.plot.setLabel("left", "Channel")
-        self.plot.setMenuEnabled(False)
-        self.plot.hideButtons()
-        self.plot.setMouseEnabled(x=False, y=False)
-        self.plot.getAxis("left").setWidth(46)
         self.bar = QScrollBar(Qt.Orientation.Horizontal)
         self.bar.setToolTip("Scroll through the recording. The mouse wheel does the same. Hold Ctrl and scroll to zoom.")
         self.time_box = QDoubleSpinBox()
@@ -240,6 +240,8 @@ class TraceView(QWidget):
         self._sync_bar()
         if self.reader is None or self.n_channels == 0 or self.n_samples == 0:
             self.row_labels = []
+            self.plot.getAxis("left").setTicks(None)
+            rest_range(self.plot)
             return
         start = int(self.start_s * self.sampling_rate)
         stop = min(self.n_samples, start + max(2, int(self.window_s * self.sampling_rate)))
@@ -311,6 +313,42 @@ class TraceView(QWidget):
                 colors.append("#ffd166" if focused else _spike_color(bool(artifact), self._review_label(int(channel), int(sample))))
             if rects:
                 self._boxes.set_boxes(np.asarray(rects, dtype=float), colors)
+        self._add_miss_boxes(start, stop, row_of)
+
+    def _add_miss_boxes(self, start: int, stop: int, row_of: dict[int, int]) -> None:
+        if self.review_labels.size == 0 or self.sampling_rate <= 0:
+            return
+        tolerance = max(1, int(round(0.0004 * self.sampling_rate)))
+        width = self.spike_pre_s + self.spike_post_s
+        rects = []
+        colors = []
+        for sample, channel, label in zip(self.review_times, self.review_channels, self.review_labels, strict=True):
+            if int(label) <= 0 or int(channel) not in row_of or not (start <= int(sample) < stop):
+                continue
+            if self.spikes_t is not None and np.any(
+                (self.spikes_c == int(channel)) & (np.abs(self.spikes_t - int(sample)) <= tolerance)
+            ):
+                continue
+            row = row_of[int(channel)]
+            rects.append(
+                (
+                    float(sample) / self.sampling_rate - self.spike_pre_s,
+                    (row - 0.5) * self.spacing,
+                    width,
+                    self.spacing,
+                )
+            )
+            colors.append(ADDED_MISS_COLOR)
+        if not rects:
+            return
+        current = self._boxes.boxes
+        current_colors = list(self._boxes.colors)
+        if current.size:
+            rects = np.vstack([current, np.asarray(rects, dtype=float)])
+            colors = current_colors + colors
+        else:
+            rects = np.asarray(rects, dtype=float)
+        self._boxes.set_boxes(rects, colors)
 
     def _on_time(self, value: float) -> None:
         self.window_s = float(np.clip(value / 1000.0, 0.005, 5.0))
@@ -500,7 +538,7 @@ class SpikeBoxes(pg.GraphicsObject):
             color = QColor(name)
             fill = QColor(color)
             edge = QColor(color)
-            fill.setAlpha(150 if name == "#ffd166" else 70)
+            fill.setAlpha(150 if name in ("#ffd166", ADDED_MISS_COLOR) else 70)
             edge.setAlpha(220)
             painter.setPen(QPen(edge, 0))
             painter.setBrush(QBrush(fill))

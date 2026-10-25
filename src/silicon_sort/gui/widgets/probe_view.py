@@ -7,6 +7,8 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QWidget
 
+from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+
 
 class ProbeMap(pg.PlotWidget):
     channelClicked = Signal(int)
@@ -14,14 +16,9 @@ class ProbeMap(pg.PlotWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setAspectLocked(False)
+        style_plot(self)
         self.setLabel("bottom", "x", units="µm")
         self.setLabel("left", "y", units="µm")
-        self.showGrid(x=False, y=False)
-        self.hideButtons()
-        self.setMenuEnabled(False)
-        self.getPlotItem().layout.setContentsMargins(0, 0, 0, 0)
-        self.getAxis("left").setWidth(36)
-        self.getAxis("bottom").setHeight(28)
         self.scatter = pg.ScatterPlotItem(pxMode=True, size=14)
         self.addItem(self.scatter)
         self.positions = np.zeros((0, 2), dtype=float)
@@ -50,8 +47,10 @@ class ProbeMap(pg.PlotWidget):
                 brushes.append(pg.mkBrush("#6ea8fe"))
         self.scatter.setData(x=self.positions[:, 0], y=self.positions[:, 1], brush=brushes, pen=pg.mkPen("#111"))
         if n_channels:
-            self.setXRange(float(self.positions[:, 0].min()) - 40, float(self.positions[:, 0].max()) + 40)
-            self.setYRange(float(self.positions[:, 1].min()) - 40, float(self.positions[:, 1].max()) + 40)
+            self.setXRange(float(self.positions[:, 0].min()) - 40, float(self.positions[:, 0].max()) + 40, padding=0)
+            self.setYRange(float(self.positions[:, 1].min()) - 40, float(self.positions[:, 1].max()) + 40, padding=0)
+        else:
+            rest_range(self)
 
     def channel_at(self, x_um: float, y_um: float, max_um: float = 40.0) -> int | None:
         if self.positions.size == 0:

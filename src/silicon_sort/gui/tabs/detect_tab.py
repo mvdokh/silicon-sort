@@ -66,33 +66,31 @@ class DetectTab(QWidget):
         )
         layout.addWidget(self.run_button)
         layout.addWidget(self.benchmark_button)
-        layout.addStretch(1)
+        self.precision = PRPlot()
+        self.precision.setMinimumHeight(150)
+        layout.addWidget(self.precision, 1)
+        self._benchmark_history: list = []
 
         self.trace = TraceView()
         self.review = EventReview(window)
         self.histogram = HistogramPlot()
-        self.histogram.setMinimumWidth(260)
-        self.precision = PRPlot()
-        self.precision.setMinimumHeight(160)
-        self._benchmark_history: list = []
+        self.histogram.setMinimumWidth(140)
         side = QSplitter(Qt.Orientation.Vertical)
         side.setHandleWidth(2)
         side.setChildrenCollapsible(False)
         side.addWidget(self.review)
         side.addWidget(self.histogram)
-        side.addWidget(self.precision)
-        side.setStretchFactor(0, 3)
+        side.setStretchFactor(0, 4)
         side.setStretchFactor(1, 1)
-        side.setStretchFactor(2, 2)
-        side.setSizes([420, 180, 220])
+        side.setSizes([520, 140])
         self.view = QSplitter(Qt.Orientation.Horizontal)
         self.view.setHandleWidth(2)
         self.view.setChildrenCollapsible(False)
         self.view.addWidget(self.trace)
         self.view.addWidget(side)
-        self.view.setStretchFactor(0, 3)
+        self.view.setStretchFactor(0, 4)
         self.view.setStretchFactor(1, 0)
-        self.view.setSizes([900, 360])
+        self.view.setSizes([1100, 260])
 
         self.run_button.clicked.connect(self.run_detection)
         self.benchmark_button.clicked.connect(self.run_benchmark)
@@ -116,6 +114,7 @@ class DetectTab(QWidget):
     def run_detection(self) -> None:
         self.window.load.collect()
         self.collect()
+        self.review.apply_examples()
 
         def work(token, progress):
             return self.window.pipeline.run_detect(progress=progress, cancel=token)
@@ -158,8 +157,6 @@ class DetectTab(QWidget):
             return
         values = spikes.amplitudes[(spikes.channels == channel) & ~spikes.artifact]
         self.histogram.set_values(values)
-        if self.review.channel != int(channel):
-            self.review.show_channel(int(channel))
 
     def _from_review(self, channel: int) -> None:
         self._channel_id = int(channel)
@@ -179,15 +176,30 @@ class DetectTab(QWidget):
         self.collect()
 
         def work(token, progress):
-            progress(0.05, "Preparing a hybrid excerpt")
-            self.window.pipeline.run_detect(progress=progress, cancel=token)
-            recording = self.window.pipeline.recording
-            probe = self.window.pipeline.probe
-            spikes = self.window.pipeline.spikes
-            mad = self.window.pipeline.noise_mad
-            assert recording is not None and probe is not None and spikes is not None and mad is not None
-            n_keep = min(recording.n_samples, int(2.0 * recording.sampling_rate))
-            excerpt = self.window.signal_reader(0, n_keep)
+            del token
+            progress(0.05, "Scoring a one-second excerpt")
+            pipeline = self.window.pipeline
+            if pipeline.recording is None or pipeline.probe is None:
+                pipeline.open()
+            recording = pipeline.recording
+            probe = pipeline.probe
+            if recording is None or probe is None:
+                raise RuntimeError("Load a recording and a geometry file before the benchmark.")
+            n_keep = min(recording.n_samples, max(1, int(recording.sampling_rate)))
+            excerpt = np.asarray(self.window.signal_reader(0, n_keep), dtype=np.float32)
+            spikes = pipeline.spikes
+            mad = pipeline.noise_mad
+            if spikes is None or mad is None:
+                from silicon_sort.detect.detect import detect_traces
+
+                tuned = self.window.settings
+                spikes, mad, _whitener = detect_traces(
+                    excerpt,
+                    probe,
+                    tuned,
+                    self.window.mask_array(),
+                    progress=progress,
+                )
             return benchmark_excerpt(
                 excerpt,
                 spikes,

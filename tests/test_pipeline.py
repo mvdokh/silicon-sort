@@ -171,3 +171,49 @@ def test_detection_can_skip_preprocessing(tmp_path: Path):
         pipeline.close()
     assert spikes.n_spikes >= 1
     assert not pipeline.cache().filtered_path.exists()
+
+
+def test_review_reuses_the_first_detection(tmp_path: Path, monkeypatch):
+    dat = tmp_path / "amp.dat"
+    cfg = tmp_path / "electrode.cfg"
+    n_channels = 8
+    fs = 10000.0
+    write_poly2_cfg(cfg, n_channels)
+    write_recording(dat, n_channels, fs, duration_s=0.4, seed=3)
+    settings = PipelineSettings(
+        dat_path=str(dat),
+        cfg_path=str(cfg),
+        n_channels=n_channels,
+        sampling_rate=fs,
+        dtype="int16",
+        voltage_scale_uv_per_bit=0.195,
+        preprocess=False,
+        whiten=False,
+        n_workers=1,
+        template_match=False,
+        mad_chunks=2,
+        chunk_seconds=0.2,
+    )
+    pipeline = Pipeline(settings)
+    calls = {"n": 0}
+    import silicon_sort.pipeline as pipeline_module
+
+    real = pipeline_module.detect_traces
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "detect_traces", wrapped)
+    try:
+        spikes = pipeline.run_detect()
+        assert spikes.n_spikes >= 1
+        assert calls["n"] == 1
+        pipeline.review_bad = "marked"
+        pipeline.review_good = "marked"
+        pipeline.label_spike(int(spikes.times[0]), int(spikes.channels[0]), -1)
+        again = pipeline.run_detect()
+        assert calls["n"] == 1
+        assert int(spikes.times[0]) not in set(again.times[again.channels == spikes.channels[0]].tolist())
+    finally:
+        pipeline.close()

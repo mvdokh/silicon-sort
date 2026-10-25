@@ -5,10 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from silicon_sort.detect.suggestions import align_click, suggest_channel
 from silicon_sort.gui.widgets.parameters import combo
+from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+from silicon_sort.gui.widgets.trace_view import ADDED_MISS_COLOR
 
 
 class EventReview(QWidget):
@@ -39,7 +41,21 @@ class EventReview(QWidget):
         self.bad_button = QPushButton("Bad")
         self.clear_button = QPushButton("Clear")
         self.apply_button = QPushButton("Detect again")
-        self.add_box = QCheckBox("Click a trace to add a missed spike")
+        self.click_action = combo(
+            ["Select closest", "Mark good", "Mark bad", "Add missed spike"],
+            "Select closest",
+            "What a click on the trace does. Select closest opens that spike. Mark good or mark bad stores it as an example. Add missed spike snaps the click to this channel's template and stores a good example.",
+        )
+        self.bad_apply = combo(
+            ["Marked only", "Similar on this channel", "Similar on every channel"],
+            "Similar on this channel",
+            "How bad examples change the next detection. Marked only drops those spikes. The other choices also drop spikes with nearly the same shape, on this channel or on every channel.",
+        )
+        self.good_apply = combo(
+            ["Marked only", "Similar on this channel", "Similar on every channel"],
+            "Similar on this channel",
+            "How good examples change the next detection. Marked only keeps those spikes. The other choices also search for the same shape below threshold, on this channel or on every channel.",
+        )
         self.mode = combo(
             ["All events", "Suggested artifacts", "Suggested misses"],
             "All events",
@@ -55,11 +71,7 @@ class EventReview(QWidget):
             (self.clear_button, "Remove the good or bad mark from this event."),
             (
                 self.apply_button,
-                "Run detection again using these marks, so the same false positives and missed shapes are handled across the file.",
-            ),
-            (
-                self.add_box,
-                "Turn this on, then click a trace. That time is stored as a good spike on the channel you clicked.",
+                "Run detection again. Good and bad examples are applied with the choices above.",
             ),
         ):
             button.setToolTip(tip)
@@ -67,13 +79,10 @@ class EventReview(QWidget):
         self.bad_button.setStyleSheet("color: #e06c75;")
 
         self.plot = pg.PlotWidget()
+        style_plot(self.plot)
         self.plot.setLabel("bottom", "Time", units="ms")
         self.plot.setLabel("left", "µV")
         self.plot.setMinimumHeight(140)
-        self.plot.showGrid(x=False, y=True, alpha=0.15)
-        self.plot.hideButtons()
-        self.plot.setMenuEnabled(False)
-        self.plot.getPlotItem().layout.setContentsMargins(0, 0, 0, 0)
         self._curves: list[pg.PlotDataItem] = []
         self.plot.scene().sigMouseClicked.connect(self._on_click)
 
@@ -83,8 +92,12 @@ class EventReview(QWidget):
         review_row = QHBoxLayout()
         review_row.addWidget(self.mode, 1)
         review_row.addWidget(self.suggest_button)
+        examples = QFormLayout()
+        examples.addRow("Click", self.click_action)
+        examples.addRow("Bad examples", self.bad_apply)
+        examples.addRow("Good examples", self.good_apply)
         actions = QHBoxLayout()
-        for widget in (self.good_button, self.bad_button, self.clear_button, self.add_box, self.apply_button):
+        for widget in (self.good_button, self.bad_button, self.clear_button, self.apply_button):
             actions.addWidget(widget)
 
         layout = QVBoxLayout(self)
@@ -94,6 +107,7 @@ class EventReview(QWidget):
         layout.addLayout(navigation)
         layout.addLayout(review_row)
         layout.addWidget(self.plot, 1)
+        layout.addLayout(examples)
         layout.addLayout(actions)
         layout.addWidget(self.status)
 
@@ -116,14 +130,49 @@ class EventReview(QWidget):
             self.channelChanged.emit(self.channel)
 
     def consider_click(self, channel: int, sample: int) -> None:
-        if not self.add_box.isChecked():
+        action = self.click_action.currentText()
+        if action == "Add missed spike":
+            self.channel = int(channel)
+            aligned = self._align_sample(int(channel), int(sample))
+            self.window.pipeline.label_spike(aligned, int(channel), 1)
+            self.focus_time(int(channel), aligned)
+            self.window.detect.sync_review_marks()
             return
+        self.focus_time(int(channel), int(sample))
+        if action == "Mark good":
+            self._mark(1)
+        elif action == "Mark bad":
+            self._mark(-1)
+
+    def apply_examples(self) -> None:
+        scopes = {
+            "Marked only": "marked",
+            "Similar on this channel": "channel",
+            "Similar on every channel": "all",
+        }
+        self.window.pipeline.review_bad = scopes[self.bad_apply.currentText()]
+        self.window.pipeline.review_good = scopes[self.good_apply.currentText()]
+
+    def focus_time(self, channel: int, sample: int) -> None:
+        """Show the spike on ``channel`` closest to ``sample``."""
         self.channel = int(channel)
-        aligned = self._align_sample(int(channel), int(sample))
-        self.window.pipeline.label_spike(aligned, int(channel), 1)
+        events = self._collect(filtered=False)
+        if not events:
+            self.selected = 0
+            self.refresh()
+            return
+        times = np.array([event[0] for event in events], dtype=np.int64)
+        nearest = int(times[int(np.argmin(np.abs(times - int(sample))))])
+        visible = self._filter_mode(events)
+        tolerance = self._tolerance()
+        if not any(abs(int(event[0]) - nearest) <= tolerance for event in visible):
+            self.mode.blockSignals(True)
+            self.mode.setCurrentText("All events")
+            self.mode.blockSignals(False)
+            visible = events
+        visible_times = np.array([event[0] for event in visible], dtype=np.int64)
+        self.selected = int(np.argmin(np.abs(visible_times - nearest)))
         self.refresh()
-        self._select_time(aligned)
-        self.window.detect.sync_review_marks()
 
     def suggest(self) -> None:
         spikes = self.window.pipeline.spikes
@@ -187,30 +236,41 @@ class EventReview(QWidget):
                 self.status.setText("Press Suggest. Mark the ones that are bad, then detect again.")
             elif mode == "misses":
                 self.title.setText(f"Channel {self.channel + 1}: no suggested misses")
-                self.status.setText("Press Suggest, or turn on the checkbox and click a missed spike. The click snaps to this channel's template.")
+                self.status.setText("Press Suggest, or set Click to Add missed spike and click the trace. The click snaps to this channel's template.")
             else:
                 self.title.setText(f"Channel {self.channel + 1}: no spikes yet")
                 self.status.setText("Mark a missed spike by turning on the checkbox and clicking the trace.")
+            rest_range(self.plot)
             return
         self.selected = int(np.clip(self.selected, 0, len(self._events) - 1))
         time_ms = (np.arange(pre + post) - pre) / fs * 1000.0
         labels = np.array([label for _sample, label, _amplitude in self._events], dtype=int)
+        added = np.array(
+            [label > 0 and not np.isfinite(amplitude) for _sample, label, amplitude in self._events],
+            dtype=bool,
+        )
         chosen = np.arange(len(self._events))
-        for label, color in ((0, "#8b93a1"), (1, "#98c379"), (-1, "#e06c75")):
-            if label == 0:
-                group = chosen[(labels == 0) & (chosen != self.selected)]
-            elif label > 0:
-                group = chosen[(labels > 0) & (chosen != self.selected)]
-            else:
-                group = chosen[(labels < 0) & (chosen != self.selected)]
+        groups = (
+            (chosen[(labels == 0) & (chosen != self.selected)], "#8b93a1"),
+            (chosen[(labels > 0) & ~added & (chosen != self.selected)], "#98c379"),
+            (chosen[added & (chosen != self.selected)], ADDED_MISS_COLOR),
+            (chosen[(labels < 0) & (chosen != self.selected)], "#e06c75"),
+        )
+        for group, color in groups:
             curve = self._stacked_curve(time_ms, group, color, 1.0)
             if curve is not None:
                 self._curves.append(curve)
         selected_wave = self._waves[self.selected]
         if selected_wave.size and np.isfinite(selected_wave).all():
-            self._curves.append(self.plot.plot(time_ms, selected_wave, pen=pg.mkPen("#f2f4f8", width=2.4)))
+            selected_color = ADDED_MISS_COLOR if bool(added[self.selected]) else "#f2f4f8"
+            self._curves.append(self.plot.plot(time_ms, selected_wave, pen=pg.mkPen(selected_color, width=2.4)))
         if time_ms.size:
             self.plot.setXRange(float(time_ms[0]), float(time_ms[-1]), padding=0.02)
+        finite = self._waves[np.isfinite(self._waves)] if self._waves.size else np.zeros(0)
+        if finite.size:
+            span = max(float(finite.max() - finite.min()), 1.0)
+            pad = 0.08 * span
+            self.plot.setYRange(float(finite.min()) - pad, float(finite.max()) + pad, padding=0)
         sample, label, _amplitude = self._events[self.selected]
         kind = {"artifacts": "suggested artifact", "misses": "suggested miss"}.get(self._review_mode(), "event")
         self.title.setText(
@@ -225,7 +285,7 @@ class EventReview(QWidget):
     def sync_marks(self) -> None:
         self.refresh()
 
-    def _collect(self) -> list[tuple[int, int, float]]:
+    def _collect(self, filtered: bool = True) -> list[tuple[int, int, float]]:
         pipeline = self.window.pipeline
         found: dict[int, tuple[int, float]] = {}
         spikes = pipeline.spikes
@@ -251,6 +311,8 @@ class EventReview(QWidget):
                 amplitude = found.pop(match)[1]
                 found[int(time)] = (int(label), amplitude)
         events = [(time, found[time][0], found[time][1]) for time in sorted(found)]
+        if not filtered:
+            return events
         return self._filter_mode(events)
 
     def _review_mode(self) -> str:

@@ -29,9 +29,11 @@ The window fills the screen. Parameters sit on the left. The log is a short stri
 
 ## 1 Load
 
-The parameters panel has two steps, **Preprocess** and **Mask**.
+The parameters panel has three steps, **Load**, **Preprocess**, and **Mask**.
 
-**Preprocess.** Choose the recording and the probe geometry. A `.dat` with no geometry is drawn in file order, channels 1 through 32 (or however many channels the file has). Loading the `.cfg` reorders the traces by electrode depth. Set channel count, sampling rate, dtype, microvolts per bit, and a byte offset if the file has a header. The GUI leaves **Preprocessing** off, so detection uses the raw recording in microvolts. Turn it on to bandpass and common-median reference into a cache first. Highpass, lowpass, reference (`global`, `shank`, or `local`), local radius, and whitening are on this page. **Run preprocessing** is optional and only matters when preprocessing is on.
+**Load.** Choose the recording and the probe geometry. A `.dat` with no geometry is drawn in file order, channels 1 through 32 (or however many channels the file has). Loading the `.cfg` reorders the traces by electrode depth. Set channel count, sampling rate, dtype, microvolts per bit, and a byte offset if the file has a header.
+
+**Preprocess.** The GUI leaves **Preprocessing** off, so detection uses the raw recording in microvolts. Turn it on to bandpass and common-median reference into a cache first. Highpass, lowpass, reference (`global`, `shank`, or `local`), local radius, and whitening are on this page. **Run preprocessing** is optional and only matters when preprocessing is on.
 
 **Mask.** Click a trace to select that channel. Shift-click or Ctrl-click adds more. **Mask selected** adds them to the mask. **Suggest bad channels** flags flat, railed, or noisy sites, and **Accept suggestions** adds those to the mask without clearing channels you already chose. **Clear mask** and **Import .msk** are here too. `M` toggles the selected channel. Clicking a site on the probe toggles that channel. Masked channels are left out of detection.
 
@@ -43,9 +45,9 @@ For an Intan RHD2132 / Neuronexus A1x32-Poly2 recording the usual values are 32 
 
 After detection, the trace shows a box over each spike for the full height of its channel. The panel on the right is the waveform review, the amplitude histogram, and the benchmark plot.
 
-**Suggest** builds a template from the spikes already found on the current channel. Detections that do not match it are listed as suggested artifacts. A lower-threshold scan of the same template lists likely misses. Mark each one **Good** or **Bad**, then **Detect again**. Bad marks drop that spike and other spikes on the channel with nearly the same shape. Good marks are kept, and similar missed spikes are searched for. Turn on **Click a trace to add a missed spike** and click the trace; the mark snaps to that channel's template so the click does not have to land on the trough.
+**Suggest** builds a template from the spikes already found on the current channel. Detections that do not match it are listed as suggested artifacts. A lower-threshold scan of the same template lists likely misses. Click a spike on the trace to open the closest event on that channel. **Click** can instead mark that spike as a good or bad example, or add a missed spike that snaps to the channel template. **Good** and **Bad** do the same for the event on screen. **Bad examples** and **Good examples** choose what **Detect again** does with those examples: only the spikes you marked, the same shape on that channel, or the same shape on every channel.
 
-**Run benchmark** plants known waveforms into a short copy of the noise and draws precision and recall against threshold. Each run stays on the plot. The title is the precision at your current threshold and how it moved from the previous run.
+**Run benchmark** scores about one second of the recording and does not detect the rest of the file again. The precision and recall plot is under the two run buttons. **Detect again** reuses the first detection when only your examples changed.
 
 ## 3 Clusters
 

@@ -57,6 +57,8 @@ class Pipeline:
         self.review_times = np.zeros(0, dtype=np.int64)
         self.review_channels = np.zeros(0, dtype=np.int32)
         self.review_labels = np.zeros(0, dtype=np.int8)
+        self.review_bad = "channel"
+        self.review_good = "channel"
 
     def label_spike(self, time: int, channel: int, label: int) -> None:
         """Remember one event as good (1), bad (-1), or clear it (0)."""
@@ -184,10 +186,13 @@ class Pipeline:
         assert recording is not None and probe is not None
         cache = self.cache()
         mask = self._mask(recording.n_channels)
+        signal_payload = self._signal_payload(recording, probe, mask)
+        detect_payload = self._detect_payload()
+        base_sha = hash_payload({"signal": signal_payload, "detect": detect_payload})
         sha = hash_payload(
             {
-                "signal": self._signal_payload(recording, probe, mask),
-                "detect": self._detect_payload(),
+                "signal": signal_payload,
+                "detect": detect_payload,
                 "review": self._review_payload(),
             }
         )
@@ -199,15 +204,26 @@ class Pipeline:
             return self.spikes
         _check(cancel)
         with self.open_signal() as signal:
-            spikes, noise_mad, whitener = detect_traces(
-                signal,
-                probe,
-                self.settings,
-                mask,
-                progress=progress,
-                cancel=cancel,
-            )
+            if cache.valid("detect_base", base_sha) and not force:
+                if progress is not None:
+                    progress(0.2, "Reusing the first detection")
+                spikes = _spike_index(cache.spikes_base_path)
+                noise_mad = np.load(cache.noise_path)
+                whitener = np.load(cache.whitener_path) if cache.whitener_path.is_file() else None
+            else:
+                spikes, noise_mad, whitener = detect_traces(
+                    signal,
+                    probe,
+                    self.settings,
+                    mask,
+                    progress=progress,
+                    cancel=cancel,
+                )
+                _save_spikes(cache.spikes_base_path, spikes)
+                cache.mark("detect_base", base_sha, n_spikes=spikes.n_spikes)
             if np.any(self.review_labels):
+                if progress is not None:
+                    progress(0.35, "Applying good and bad examples")
                 spikes = refine_with_review(
                     signal,
                     spikes,
@@ -218,6 +234,8 @@ class Pipeline:
                     noise_mad,
                     progress=progress,
                     cancel=cancel,
+                    bad_scope=self.review_bad,
+                    good_scope=self.review_good,
                 )
         np.savez(
             cache.spikes_path,
@@ -227,6 +245,8 @@ class Pipeline:
             artifact=spikes.artifact,
         )
         np.save(cache.noise_path, noise_mad)
+        if whitener is None:
+            whitener = np.eye(recording.n_channels, dtype=np.float32)
         np.save(cache.whitener_path, whitener)
         cache.mark("detect", sha, n_spikes=spikes.n_spikes)
         cache.invalidate_from("sort")
@@ -444,14 +464,15 @@ class Pipeline:
             "positions": np.round(probe.positions, 3).tolist(),
         }
 
-    def _review_payload(self) -> list[list[int]]:
-        if self.review_labels.size == 0:
-            return []
-        order = np.lexsort((self.review_times, self.review_channels, self.review_labels))
-        return [
-            [int(self.review_times[index]), int(self.review_channels[index]), int(self.review_labels[index])]
-            for index in order
-        ]
+    def _review_payload(self) -> dict[str, Any]:
+        marks: list[list[int]] = []
+        if self.review_labels.size:
+            order = np.lexsort((self.review_times, self.review_channels, self.review_labels))
+            marks = [
+                [int(self.review_times[index]), int(self.review_channels[index]), int(self.review_labels[index])]
+                for index in order
+            ]
+        return {"marks": marks, "bad": self.review_bad, "good": self.review_good}
 
     def _detect_payload(self) -> dict[str, Any]:
         keys = (
@@ -498,18 +519,32 @@ class Pipeline:
         return {key: getattr(self.settings, key) for key in keys}
 
     def _load_detection(self, cache: SessionCache) -> None:
-        payload = np.load(cache.spikes_path)
-        self.spikes = SpikeIndex(
-            payload["times"].astype(np.int64),
-            payload["channels"].astype(np.int32),
-            payload["amplitudes"].astype(np.float32),
-            payload["artifact"].astype(bool),
-        )
+        self.spikes = _spike_index(cache.spikes_path)
         self.noise_mad = np.load(cache.noise_path)
         if cache.whitener_path.is_file():
             self.whitener = np.load(cache.whitener_path)
         else:
             self.whitener = None
+
+
+def _save_spikes(path: Path, spikes: SpikeIndex) -> None:
+    np.savez(
+        path,
+        times=spikes.times,
+        channels=spikes.channels,
+        amplitudes=spikes.amplitudes,
+        artifact=spikes.artifact,
+    )
+
+
+def _spike_index(path: Path) -> SpikeIndex:
+    payload = np.load(path)
+    return SpikeIndex(
+        payload["times"].astype(np.int64),
+        payload["channels"].astype(np.int32),
+        payload["amplitudes"].astype(np.float32),
+        payload["artifact"].astype(bool),
+    )
 
 
 def resolve_settings(settings: PipelineSettings) -> PipelineSettings:

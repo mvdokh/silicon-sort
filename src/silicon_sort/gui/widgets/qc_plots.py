@@ -7,6 +7,8 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
+from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+
 
 class HistogramPlot(pg.PlotWidget):
     def __init__(self, parent: QWidget | None = None):
@@ -20,11 +22,14 @@ class HistogramPlot(pg.PlotWidget):
     def set_values(self, values: np.ndarray) -> None:
         if values.size == 0:
             self.item.setOpts(x=[], height=[], width=1)
+            rest_range(self)
             return
         counts, edges = np.histogram(np.abs(values), bins=40)
         centers = 0.5 * (edges[:-1] + edges[1:])
         width = float(edges[1] - edges[0]) if edges.size > 1 else 1.0
-        self.item.setOpts(x=centers, height=counts, width=width * 0.9, brush=pg.mkBrush("#6ea8fe"))
+        self.item.setOpts(x=centers, height=counts, width=width, brush=pg.mkBrush("#f4f6fb"))
+        self.setXRange(float(edges[0]), float(edges[-1]), padding=0.02)
+        self.setYRange(0, max(float(counts.max()) * 1.08, 1.0), padding=0)
 
 
 class RatePlot(pg.PlotWidget):
@@ -38,16 +43,19 @@ class RatePlot(pg.PlotWidget):
     def set_times(self, times_s: np.ndarray, duration_s: float, bin_s: float = 1.0) -> None:
         if duration_s <= 0:
             self.curve.setData([], [])
+            rest_range(self)
             return
         bins = max(1, int(np.ceil(duration_s / bin_s)))
         counts, edges = np.histogram(times_s, bins=bins, range=(0, bins * bin_s))
         centers = 0.5 * (edges[:-1] + edges[1:])
         self.curve.setData(centers, counts)
+        self.getViewBox().autoRange()
 
 
 class ScatterPreview(pg.PlotWidget):
     def __init__(self, xlabel: str, ylabel: str, parent: QWidget | None = None):
         super().__init__(parent)
+        style_plot(self)
         self.setLabel("bottom", xlabel)
         self.setLabel("left", ylabel)
         self.scatter = pg.ScatterPlotItem(size=7, pxMode=True)
@@ -56,14 +64,17 @@ class ScatterPreview(pg.PlotWidget):
     def set_points(self, x: np.ndarray, y: np.ndarray, labels: np.ndarray | None = None) -> None:
         if x.size == 0:
             self.scatter.setData([])
+            rest_range(self)
             return
         brushes = [_brush(0 if labels is None else int(label)) for label in (np.zeros(x.size, dtype=int) if labels is None else labels)]
         self.scatter.setData(x=x, y=y, brush=brushes, pen=None)
+        self.getViewBox().autoRange()
 
 
 class WaveformPreview(pg.PlotWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        style_plot(self)
         self.setLabel("bottom", "Sample")
         self.setLabel("left", "µV")
         self._curves: list[pg.PlotDataItem] = []
@@ -73,12 +84,14 @@ class WaveformPreview(pg.PlotWidget):
             self.removeItem(curve)
         self._curves.clear()
         if waveforms.size == 0:
+            rest_range(self)
             return
         time = np.arange(waveforms.shape[1])
         step = max(1, waveforms.shape[0] // 40)
         for row in range(0, waveforms.shape[0], step):
             curve = self.plot(time, waveforms[row], pen=pg.mkPen(_color(int(labels[row])), width=1))
             self._curves.append(curve)
+        self.getViewBox().autoRange()
 
 
 class PRPlot(pg.PlotWidget):
@@ -102,6 +115,7 @@ class PRPlot(pg.PlotWidget):
         self._curves.clear()
         if not runs:
             self.setTitle("")
+            rest_range(self)
             return
         for index, (thresholds, precision, _recall) in enumerate(runs):
             if thresholds.size == 0 or precision.size == 0:
@@ -130,17 +144,13 @@ class PRPlot(pg.PlotWidget):
                 title += f" ({delta:+.2f})"
             self.addItem(pg.InfiniteLine(pos=abs(float(operating)), angle=90, pen=pg.mkPen("#e5c07b", width=1)))
         self.setTitle(title)
+        self.getViewBox().autoRange()
 
 
 def _relax(plot: pg.PlotWidget) -> None:
     plot.setMinimumHeight(220)
     plot.setMinimumWidth(180)
-    item = plot.getPlotItem()
-    item.hideButtons()
-    item.setMenuEnabled(False)
-    item.layout.setContentsMargins(0, 0, 0, 0)
-    plot.getAxis("left").setWidth(40)
-    plot.getAxis("bottom").setHeight(32)
+    style_plot(plot)
 
 
 _COLORS = ("#6ea8fe", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2", "#98c379")

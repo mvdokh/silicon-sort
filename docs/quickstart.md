@@ -32,7 +32,7 @@ These values match an Intan RHD2132 recording of an A1x32-Poly2 probe.
 | Threshold | −5 MAD |
 
 1. On **Load**, browse to the `.dat`. The traces appear in file order, channel 1 through channel 32. Browse to `electrode.cfg` and the same traces reorder by depth.
-2. Leave preprocessing off if the file is already the recording you want to sort. Mask bad channels on the **Mask** step.
+2. On **Preprocess**, leave filtering off if the file is already the recording you want to sort. On **Mask**, exclude bad channels.
 3. Open **Detect**, run detection, and scroll the traces. Use **Suggest** on a channel, mark events good or bad, and run detection again.
 4. Open **Clusters** and preview one site.
 5. Open **Autosort**, run it, and export a Phy folder.

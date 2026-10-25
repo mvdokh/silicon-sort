@@ -196,9 +196,8 @@ def benchmark_excerpt(
 
 def _blank_known_spikes(noise: np.ndarray, spikes: SpikeIndex, pre: int, post: int) -> None:
     clean = spikes.clean()
-    for time, channel in zip(clean.times, clean.channels, strict=True):
-        if time >= noise.shape[0]:
-            continue
+    inside = clean.times < noise.shape[0]
+    for time, channel in zip(clean.times[inside], clean.channels[inside], strict=True):
         start = max(0, int(time) - pre)
         stop = min(noise.shape[0], int(time) + post)
         noise[start:stop, int(channel)] = 0.0

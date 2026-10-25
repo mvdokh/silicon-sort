@@ -1,10 +1,10 @@
 # Load
 
-The first stage is two steps in the parameters panel: **Preprocess**, then **Mask**. The traces and the probe stay on screen while you switch.
+The first stage is three steps in the parameters panel: **Load**, **Preprocess**, then **Mask**. The traces and the probe stay on screen while you switch.
 
 Choosing a `.dat` opens it immediately. You do not press a separate show button.
 
-## Recording
+## Load
 
 | Control | What it sets |
 | --- | --- |
@@ -22,7 +22,7 @@ A sidecar named `yourfile.dat.json`, if it sits next to the binary, fills these 
 
 With no geometry, the display order is the file order. Channel 1 is the first row of that order and channel 32 is the last. Loading a `.cfg` replaces that order with electrode depth: the site with the largest `y` is at the top of the stack. Sites missing from the cfg stay in the recording but are not drawn as present probe contacts.
 
-## Filter
+## Preprocess
 
 Preprocessing is **off** when you open the GUI. Detection, review, and clustering then read the raw file scaled to microvolts. A headless `silicon-sort run` still preprocesses unless the settings JSON says otherwise.
 
@@ -39,7 +39,7 @@ Preprocessing is **off** when you open the GUI. Detection, review, and clusterin
 
 The filter is a 3rd-order Butterworth, applied zero-phase in overlapping chunks. Masked channels are excluded from the median and written as zeros.
 
-## Bad channels
+## Mask
 
 | Control | What it does |
 | --- | --- |

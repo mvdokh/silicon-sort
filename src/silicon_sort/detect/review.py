@@ -62,12 +62,14 @@ def refine_with_review(
     noise_mad: np.ndarray,
     progress: Progress | None = None,
     cancel: CancelToken | None = None,
+    bad_scope: str = "channel",
+    good_scope: str = "channel",
 ) -> SpikeIndex:
     """Drop events like the bad marks, keep the good marks, and find similar missed spikes.
 
-    A bad mark removes that event and other events on the same channel with nearly
-    the same waveform. A good mark is kept even if threshold detection missed it,
-    and a lower-threshold template scan looks for more spikes of that shape.
+    ``bad_scope`` and ``good_scope`` are ``marked``, ``channel``, or ``all``.
+    Marked applies each example only to itself. Channel also matches the same
+    shape on that example's channel. All matches the shape on every channel.
     """
     review_times = np.asarray(review_times, dtype=np.int64)
     review_channels = np.asarray(review_channels, dtype=np.int32)
@@ -113,8 +115,8 @@ def refine_with_review(
     found_t: list[int] = []
     found_c: list[int] = []
     found_a: list[float] = []
-    good_channels = list(good_template)
-    for index, channel in enumerate(good_channels):
+    pairs = _good_pairs(good_template, noise_mad, good_scope)
+    for index, (channel, template) in enumerate(pairs):
         if cancel is not None and cancel.cancelled():
             raise Cancelled("Detection cancelled.")
         if not np.isfinite(noise_mad[channel]):
@@ -122,14 +124,14 @@ def refine_with_review(
         occupied = np.sort(times[channels == channel]) if times.size else np.zeros(0, dtype=np.int64)
         new_times, new_amps = _scan_channel(
             data[:, channel],
-            good_template[channel],
+            template,
             pre,
             polarity,
             float(noise_mad[channel]),
             float(settings.threshold_mad),
             float(settings.template_threshold_fraction),
             float(settings.template_min_cosine),
-            max(pre + post, int(round(settings.chunk_seconds * fs))),
+            max(pre + post, int(round(max(settings.chunk_seconds, 30.0) * fs))),
             occupied,
             _ms(settings.dead_time_ms, fs),
         )
@@ -137,7 +139,7 @@ def refine_with_review(
         found_c.extend([channel] * len(new_times))
         found_a.extend(new_amps)
         if progress is not None:
-            progress((index + 1) / max(len(good_channels), 1), f"Review template {index + 1}/{len(good_channels)}")
+            progress((index + 1) / max(len(pairs), 1), f"Review template {index + 1}/{len(pairs)}")
 
     if found_t:
         times = np.concatenate([times, np.asarray(found_t, dtype=np.int64)])
@@ -147,7 +149,7 @@ def refine_with_review(
 
     merged = SpikeIndex(times, channels, amplitudes, artifact)
     merged = _finalize_spikes(merged, n_channels=int(data.shape[1]), dead_samples=_ms(settings.dead_time_ms, fs))
-    if not bad_template or merged.n_spikes == 0:
+    if merged.n_spikes == 0:
         return merged
 
     protected = _near_label(
@@ -168,15 +170,19 @@ def refine_with_review(
         -1,
         tolerance,
     )
-    shaped = _matches_bad_shape(
-        data,
-        merged,
-        bad_template,
-        good_template,
-        pre,
-        post,
-        protected,
-    )
+    if bad_scope == "marked" or not bad_template:
+        shaped = np.zeros(merged.n_spikes, dtype=bool)
+    else:
+        shaped = _matches_bad_shape(
+            data,
+            merged,
+            bad_template,
+            good_template,
+            pre,
+            post,
+            protected,
+            scope=bad_scope,
+        )
     keep = protected | ~(rejected | shaped)
     return SpikeIndex(merged.times[keep], merged.channels[keep], merged.amplitudes[keep], merged.artifact[keep])
 
@@ -200,6 +206,19 @@ def _templates(
         bucket = good if int(label) > 0 else bad
         bucket.setdefault(int(channel), []).append(wave)
     return _median_bank(good), _median_bank(bad)
+
+
+def _good_pairs(
+    good_template: dict[int, np.ndarray],
+    noise_mad: np.ndarray,
+    scope: str,
+) -> list[tuple[int, np.ndarray]]:
+    if scope == "marked" or not good_template:
+        return []
+    if scope == "all":
+        eligible = [channel for channel in range(noise_mad.size) if np.isfinite(noise_mad[channel])]
+        return [(channel, template) for template in good_template.values() for channel in eligible]
+    return [(channel, template) for channel, template in good_template.items()]
 
 
 def _median_bank(groups: dict[int, list[np.ndarray]]) -> dict[int, np.ndarray]:
@@ -253,25 +272,55 @@ def _matches_bad_shape(
     pre: int,
     post: int,
     protected: np.ndarray,
+    scope: str = "channel",
 ) -> np.ndarray:
     rejected = np.zeros(spikes.n_spikes, dtype=bool)
-    for index in range(spikes.n_spikes):
-        if protected[index]:
+    every_bad = list(bad_template.values())
+    every_good = list(good_template.values())
+    channels = range(int(data.shape[1])) if scope == "all" else sorted(bad_template)
+    width = pre + post
+    for channel in channels:
+        if scope == "all":
+            candidates = every_bad
+            goods = every_good
+        else:
+            template = bad_template.get(int(channel))
+            candidates = [] if template is None else [template]
+            good = good_template.get(int(channel))
+            goods = [] if good is None else [good]
+        if not candidates:
             continue
-        channel = int(spikes.channels[index])
-        template = bad_template.get(channel)
-        if template is None:
+        chosen = np.flatnonzero((spikes.channels == channel) & ~protected)
+        if chosen.size == 0:
             continue
-        wave = _waveform(data, int(spikes.times[index]), channel, pre, post)
-        if wave is None:
-            continue
-        cosine_bad = _cosine(wave, template)
-        if cosine_bad < _REJECT_COSINE:
-            continue
-        good = good_template.get(channel)
-        if good is not None and cosine_bad <= _cosine(wave, good) + 0.02:
-            continue
-        rejected[index] = True
+        times = spikes.times[chosen]
+        order = np.argsort(times)
+        chosen = chosen[order]
+        times = times[order]
+        block = max(width + 1, 60000)
+        cursor = 0
+        while cursor < times.size:
+            end = cursor
+            while end + 1 < times.size and int(times[end + 1]) < int(times[cursor]) + block:
+                end += 1
+            start = int(times[cursor]) - pre
+            stop = int(times[end]) + post
+            if start < 0 or stop > data.shape[0]:
+                cursor = end + 1
+                continue
+            column = np.asarray(data[start:stop], dtype=np.float32)[:, channel]
+            for index, time in zip(chosen[cursor : end + 1], times[cursor : end + 1], strict=True):
+                local = int(time) - start - pre
+                wave = column[local : local + width]
+                if wave.size != width:
+                    continue
+                cosine_bad = max(_cosine(wave, template) for template in candidates)
+                if cosine_bad < _REJECT_COSINE:
+                    continue
+                if any(cosine_bad <= _cosine(wave, template) + 0.02 for template in goods):
+                    continue
+                rejected[index] = True
+            cursor = end + 1
     return rejected
 
 

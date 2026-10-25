@@ -187,6 +187,57 @@ def test_review_marks_drop_false_positives_and_keep_missed_spikes():
     assert 1400 not in kept
     assert 1800 not in kept
 
+    marked = refine_with_review(
+        data,
+        spikes,
+        review_times=np.array([400, 1400], dtype=np.int64),
+        review_channels=np.zeros(2, dtype=np.int32),
+        review_labels=np.array([1, -1], dtype=np.int8),
+        settings=settings,
+        noise_mad=np.array([8.0]),
+        bad_scope="marked",
+        good_scope="marked",
+    )
+    marked_times = set(marked.times.tolist())
+    assert 400 in marked_times
+    assert 1400 not in marked_times
+    assert 1800 in marked_times
+    assert 900 not in marked_times
+
+    other = data.copy()
+    other = np.column_stack([data[:, 0], np.zeros(n_samples, dtype=np.float32)])
+    other[1400 : 1400 + bump.size, 1] += bump * 80.0
+    both = SpikeIndex(
+        np.array([1400, 1400], dtype=np.int64),
+        np.array([0, 1], dtype=np.int32),
+        np.array([80.0, 80.0], dtype=np.float32),
+        np.zeros(2, dtype=bool),
+    )
+    own_channel = refine_with_review(
+        other,
+        both,
+        review_times=np.array([1400], dtype=np.int64),
+        review_channels=np.array([0], dtype=np.int32),
+        review_labels=np.array([-1], dtype=np.int8),
+        settings=settings,
+        noise_mad=np.array([8.0, 8.0]),
+        bad_scope="channel",
+        good_scope="marked",
+    )
+    assert set(zip(own_channel.times.tolist(), own_channel.channels.tolist(), strict=True)) == {(1400, 1)}
+    every_channel = refine_with_review(
+        other,
+        both,
+        review_times=np.array([1400], dtype=np.int64),
+        review_channels=np.array([0], dtype=np.int32),
+        review_labels=np.array([-1], dtype=np.int8),
+        settings=settings,
+        noise_mad=np.array([8.0, 8.0]),
+        bad_scope="all",
+        good_scope="marked",
+    )
+    assert every_channel.n_spikes == 0
+
 
 def test_suggestions_flag_bad_shapes_and_align_a_click():
     from silicon_sort.detect.suggestions import align_click, suggest_channel

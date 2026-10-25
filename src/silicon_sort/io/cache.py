@@ -37,6 +37,10 @@ class SessionCache:
         return self.root / "spikes.npz"
 
     @property
+    def spikes_base_path(self) -> Path:
+        return self.root / "spikes_base.npz"
+
+    @property
     def noise_path(self) -> Path:
         return self.root / "noise_mad.npy"
 
@@ -86,11 +90,15 @@ class SessionCache:
         manifest = self.load_manifest()
         for name in order[order.index(stage) :]:
             manifest.pop(name, None)
+        if stage in ("preprocess", "detect"):
+            manifest.pop("detect_base", None)
         self.save_manifest(manifest)
 
     def _stage_files_exist(self, stage: str) -> bool:
         if stage == "preprocess":
             return self.filtered_path.is_file()
+        if stage == "detect_base":
+            return self.spikes_base_path.is_file() and self.noise_path.is_file()
         if stage == "detect":
             return self.spikes_path.is_file() and self.noise_path.is_file()
         if stage == "sort":

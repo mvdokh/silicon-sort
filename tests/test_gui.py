@@ -54,7 +54,41 @@ def test_window_icon_loads():
     window.close()
 
 
-def test_load_parameters_are_split_into_preprocess_and_mask():
+def test_empty_plots_show_ticks_without_axis_lines():
+    from PySide6.QtCore import Qt
+
+    _app()
+    window = MainWindow()
+    window.show()
+    QApplication.processEvents()
+    plots = (
+        window.load.probe,
+        window.load.trace.plot,
+        window.detect.trace.plot,
+        window.detect.histogram,
+        window.detect.precision,
+        window.detect.review.plot,
+        window.clusters.waves,
+        window.clusters.pca,
+    )
+    for plot in plots:
+        left = plot.getAxis("left")
+        bottom = plot.getAxis("bottom")
+        assert left.pen().style() == Qt.PenStyle.NoPen
+        assert bottom.pen().style() == Qt.PenStyle.NoPen
+        assert left.tickPen().style() != Qt.PenStyle.NoPen
+        assert not plot.getAxis("top").isVisible()
+        assert not plot.getAxis("right").isVisible()
+        x_range, y_range = plot.viewRange()
+        assert abs(x_range[1] - x_range[0]) < 5
+        assert abs(y_range[1] - y_range[0]) < 5
+    y_axis = window.load.probe.getAxis("left")
+    QApplication.processEvents()
+    assert y_axis.width() > y_axis.label.boundingRect().height() + 24
+    window.close()
+
+
+def test_load_parameters_are_split_into_load_preprocess_and_mask():
     _app()
     window = MainWindow()
     window.show()
@@ -67,17 +101,22 @@ def test_load_parameters_are_split_into_preprocess_and_mask():
         return window.load.steps.indexOf(page)
 
     assert window.load.steps.currentIndex() == 0
-    assert window.load.preprocess_step.isChecked()
+    assert window.load.load_step.isChecked()
     assert page_of(window.load.dat) == 0
-    assert page_of(window.load.run_button) == 0
-    assert page_of(window.load.highpass) == 0
-    assert page_of(window.load.suggest_button) == 1
-    assert page_of(window.load.mask_selected_button) == 1
-    window.load.mask_step.click()
+    assert page_of(window.load.cfg) == 0
+    assert page_of(window.load.run_button) == 1
+    assert page_of(window.load.highpass) == 1
+    assert page_of(window.load.suggest_button) == 2
+    assert page_of(window.load.mask_selected_button) == 2
+    window.load.preprocess_step.click()
     QApplication.processEvents()
     assert window.load.steps.currentIndex() == 1
+    assert window.load.preprocess_step.isChecked()
+    window.load.mask_step.click()
+    QApplication.processEvents()
+    assert window.load.steps.currentIndex() == 2
     assert window.load.mask_step.isChecked()
-    window.load.preprocess_step.click()
+    window.load.load_step.click()
     QApplication.processEvents()
     assert window.load.steps.currentIndex() == 0
     window.close()
@@ -279,6 +318,35 @@ def test_review_draws_every_waveform_and_seeks_the_trace(tmp_path: Path):
     assert boxes.shape[0] > 0
     assert np.allclose(boxes[:, 2], 0.0006 + 0.0012)
     assert np.allclose(boxes[:, 3], trace.spacing)
+
+    late = int(times[22])
+    review.show_channel(1)
+    window.detect._channel(0)
+    review.consider_click(0, late + 3)
+    assert review.channel == 0
+    assert int(review._events[review.selected][0]) == late
+    assert trace.focused_sample == late
+
+    review.click_action.setCurrentText("Mark bad")
+    review.consider_click(0, int(times[4]))
+    assert review._label_at(int(times[4])) == -1
+    review.bad_apply.setCurrentText("Marked only")
+    review.good_apply.setCurrentText("Similar on every channel")
+    review.apply_examples()
+    assert window.pipeline.review_bad == "marked"
+    assert window.pipeline.review_good == "all"
+
+    from silicon_sort.gui.widgets.trace_view import ADDED_MISS_COLOR
+
+    review.click_action.setCurrentText("Add missed spike")
+    review.consider_click(0, 200)
+    added = review._events[review.selected]
+    assert not np.isfinite(added[2])
+    assert ADDED_MISS_COLOR in trace._boxes.colors
+    pen = review._curves[-1].opts["pen"]
+    assert pen.color().name().lower() == ADDED_MISS_COLOR
+    assert window.detect.precision.parent() is window.detect.form
+    assert window.detect.view.widget(1).indexOf(window.detect.precision) < 0
     window.close()
 
 
