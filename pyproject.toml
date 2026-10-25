@@ -19,12 +19,16 @@ dependencies = [
 gui = ["PySide6-Essentials>=6.6", "pyqtgraph>=0.13"]
 cuda = ["cupy-cuda12x>=13.0"]
 dev = ["pytest>=8.0"]
+docs = ["mkdocs-material>=9.5"]
 
 [project.scripts]
 silicon-sort = "silicon_sort.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+silicon_sort = ["gui/assets/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

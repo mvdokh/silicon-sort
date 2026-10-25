@@ -42,6 +42,18 @@ def _wait(window: MainWindow, timeout_s: float = 30.0) -> None:
     QApplication.processEvents()
 
 
+def test_window_icon_loads():
+    from silicon_sort.gui.icon import app_icon, icon_path
+
+    _app()
+    assert icon_path().is_file()
+    icon = app_icon()
+    assert not icon.isNull()
+    window = MainWindow()
+    assert not window.windowIcon().isNull()
+    window.close()
+
+
 def test_load_parameters_are_split_into_preprocess_and_mask():
     _app()
     window = MainWindow()

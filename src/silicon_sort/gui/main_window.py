@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QDockWidget
 
+from silicon_sort.gui.icon import app_icon
 from silicon_sort.gui.tabs.autosort_tab import AutosortTab
 from silicon_sort.gui.tabs.clusters_tab import ClustersTab
 from silicon_sort.gui.tabs.detect_tab import DetectTab
@@ -30,6 +31,7 @@ from silicon_sort.settings import PipelineSettings, load_settings, save_settings
 class MainWindow(QMainWindow):
     def __init__(self, dat_path: str = "", cfg_path: str = "") -> None:
         super().__init__()
+        self.setWindowIcon(app_icon())
         self.setWindowTitle("Silicon Sort")
         self.resize(1280, 800)
         self.setDockOptions(

@@ -1,87 +1,76 @@
+<p align="center">
+  <img src="spike-sorter-icon-v6.svg" alt="Spike Sorter" width="160">
+</p>
+
 # Silicon Sort
 
-Desktop spike sorter for low-channel brainstem silicon probes. It bandpasses and references a raw binary recording in chunks, detects spikes with a spatial neighborhood rule, clusters each site with a Gaussian mixture, and writes a Phy folder. Curation stays in Phy.
+Desktop spike sorter for low-channel brainstem silicon probes. It reads a raw binary recording without loading the whole file, optionally filters it, detects spikes, clusters each site, and writes a Phy folder. Manual curation stays in Phy.
 
-The heavy work runs off the GUI thread. Filtered data and the spike index are cached beside the recording, so later stages do not repeat earlier ones. Nothing in the pipeline loads the whole recording into memory.
+A longer description of the pipeline, every setting, and the cache is in the [documentation](https://mvdokh.github.io/silicon-sort/).
 
-## Install
+## Quick start
 
 Python 3.11 or newer.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[gui,dev]"
-```
-
-The sorter runs on CPU. A CUDA device is used for the whitening multiply only when CuPy imports and sees a GPU. This Mac has no CUDA, so that path stays unused.
-
-## Open the app
-
-```bash
+pip install -e ".[gui]"
 silicon-sort gui
 ```
 
-The window has four stages, left to right:
+To open a session immediately:
 
-1. **Load.** Choose the raw `.dat` and the probe `.cfg`. Set channel count, sampling rate, dtype, and microvolts per bit. The app remembers those in `yourfile.dat.json`. Show the probe and scroll the raw traces. Mask bad channels by clicking a site or a trace, or press `M`. Suggest bad channels, then accept or override the suggestion. Run preprocessing.
-2. **Detect.** Set the threshold, neighborhood, dead time, and artifact rule. Run detection. The plots show the filtered traces, an amplitude histogram, and firing rate over time. Run benchmark plants known waveforms into a short copy of the noise and draws precision and recall against threshold.
-3. **Clusters.** Pick a channel and a cluster count. Auto uses BIC. Preview shows waveforms, a PCA scatter, and amplitude over time.
-4. **Autosort.** Cluster every site from those settings, merge neighbors whose templates and correlograms match, split refractory violations that are bimodal, and export Phy.
-
-Left and right arrows scroll the traces. `[` and `]` change the time window. Parameters live in a dock you can move.
-
-## Sample session
-
-The Intan session this was built against is a Neuronexus A1x32-Poly2:
-
-| Field | Value |
-| --- | --- |
-| File | `amplifier.dat` (raw wideband, not the already-whitened `amplifier_cmr_zca.dat`) |
-| Channels | 32 |
-| Sampling rate | 30000 Hz |
-| Dtype | int16 |
-| Scale | 0.195 µV/bit |
-| Geometry | `electrode.cfg`, 1-based `site channel x y` |
-
-Defaults in the GUI match that file: bandpass 300–6000 Hz, global common median reference, whitening on, threshold −5 MAD, neighbor radius 60 µm.
-
-`electrode.cfg` looks like this:
-
-```
-poly2
-1 1 21.65 25
-2 2 21.65 725
+```bash
+silicon-sort gui --dat amplifier.dat --cfg electrode.cfg
 ```
 
-Channel numbers start at 1 and follow the order of samples in the binary file. A line with three numbers is `channel x y`.
+The window fills the screen. Parameters sit on the left. The log is a short strip under that column.
 
-The filtered cache is float32, about twice the size of an int16 recording. The 3.4 GB example needs about 6.8 GB next to the file, in a folder named `amplifier.silicon-sort`.
+## 1 Load
+
+The parameters panel has two steps, **Preprocess** and **Mask**.
+
+**Preprocess.** Choose the recording and the probe geometry. A `.dat` with no geometry is drawn in file order, channels 1 through 32 (or however many channels the file has). Loading the `.cfg` reorders the traces by electrode depth. Set channel count, sampling rate, dtype, microvolts per bit, and a byte offset if the file has a header. The GUI leaves **Preprocessing** off, so detection uses the raw recording in microvolts. Turn it on to bandpass and common-median reference into a cache first. Highpass, lowpass, reference (`global`, `shank`, or `local`), local radius, and whitening are on this page. **Run preprocessing** is optional and only matters when preprocessing is on.
+
+**Mask.** Click a trace to select that channel. Shift-click or Ctrl-click adds more. **Mask selected** adds them to the mask. **Suggest bad channels** flags flat, railed, or noisy sites, and **Accept suggestions** adds those to the mask without clearing channels you already chose. **Clear mask** and **Import .msk** are here too. `M` toggles the selected channel. Clicking a site on the probe toggles that channel. Masked channels are left out of detection.
+
+For an Intan RHD2132 / Neuronexus A1x32-Poly2 recording the usual values are 32 channels, 30000 Hz, int16, and 0.195 µV/bit. `electrode.cfg` is a name line, then `site channel x y` in micrometers, with channel numbers starting at 1.
+
+## 2 Detect
+
+**Threshold MAD** is the detection line in noise units. Negative values look for downward spikes. The default is −5, about five robust standard deviations below zero. **Neighbor radius**, **Neighbor fraction**, and **Min neighbors** require a nearby site to cross a lower threshold at the same time. **Dead time** blocks a second spike on the same site for that many milliseconds. **Artifact fraction** and **Artifact MAD** mark coincident deflections, such as movement, and keep them out of clustering. **Template match** is an optional second pass: each channel's median waveform is scanned at 60% of the threshold, and new spikes are added only when they match that shape. It does not remove spikes from the first pass.
+
+After detection, the trace shows a box over each spike for the full height of its channel. The panel on the right is the waveform review, the amplitude histogram, and the benchmark plot.
+
+**Suggest** builds a template from the spikes already found on the current channel. Detections that do not match it are listed as suggested artifacts. A lower-threshold scan of the same template lists likely misses. Mark each one **Good** or **Bad**, then **Detect again**. Bad marks drop that spike and other spikes on the channel with nearly the same shape. Good marks are kept, and similar missed spikes are searched for. Turn on **Click a trace to add a missed spike** and click the trace; the mark snaps to that channel's template so the click does not have to land on the trough.
+
+**Run benchmark** plants known waveforms into a short copy of the noise and draws precision and recall against threshold. Each run stays on the plot. The title is the precision at your current threshold and how it moved from the previous run.
+
+## 3 Clusters
+
+Pick a peak channel. **Clusters** is Auto, or a forced count from 1 to 4. **BIC maximum** is the largest count Auto may choose. **Preview channel** fits that site only and shows waveforms, a PCA scatter, and amplitude against time. Use this to decide the count before autosort.
+
+## 4 Autosort
+
+Clusters every site, then merges neighbors whose templates and spatial footprints agree and whose spike times share structure. **Merge cosine** and **Merge footprint** are those cutoffs. **Refractory ms** and **ISI split** split a cluster that breaks the refractory period and is bimodal in amplitude. **Export Phy** writes the folder Phy reads. Times stay in samples. Templates are in microvolts.
+
+## Moving around the traces
+
+Drag the traces up or down to move through channels. Shift+scroll does the same. The horizontal bar, the mouse wheel, and the left and right arrows move through time. Ctrl+scroll, or `[` and `]`, changes the time window. **Window** is how much time is on screen. **µV / channel** is the vertical distance between baselines. **Spacing** spreads the channels apart: 1 fits every channel, and a higher value shows fewer rows while keeping the channel that was at the top of the view at the top.
 
 ## Headless run
 
-Save settings from the File menu, or write the same JSON yourself. A run refuses to start when channel count, sampling rate, or dtype is missing from both the JSON and the sidecar.
+Save settings from the File menu, then:
 
 ```bash
 silicon-sort run pipeline_settings.json --output phy_out
 ```
 
-The Phy folder contains `spike_times.npy`, `spike_clusters.npy`, `spike_templates.npy`, `templates.npy`, `amplitudes.npy`, `channel_map.npy`, `channel_positions.npy`, `params.py`, `cluster_info.tsv`, and `pipeline_settings.json`. Times are in samples. Templates are in microvolts. `params.py` points at the raw file.
+A headless run preprocesses by default. The GUI does not, until you turn preprocessing on. The full settings list is in the [command-line docs](https://mvdokh.github.io/silicon-sort/cli/).
 
 ## Tests
 
 ```bash
 pytest
 ```
-
-Tests use synthetic memmaps. They cover the geometry parser, chunked filtering, chunk-boundary detection, artifact blanking, waveform windows, clustering, and the Phy files.
-
-## How a recording moves through the stages
-
-Preprocessing writes one float32 memmap: zero-phase Butterworth bandpass, then a common median reference (global, per shank, or per local group). Masked channels are left out of the median and set to zero. Whitening is a spatial ZCA matrix estimated on random chunks and applied while detecting, so it does not get a second full-file copy.
-
-Detection thresholds the whitened trace, asks for a neighbor inside the radius, aligns to the peak, enforces a per-site dead time, and drops single-sample glitches and waveforms with no opposite lobe. A coincident deflection on many channels is flagged as an artifact and kept out of clustering. An optional second pass matches the median waveform of each channel to pick up smaller spikes.
-
-Clustering is per peak channel. Features are a local PCA of the waveform neighborhood, the amplitude, and an amplitude-weighted center of mass. A Gaussian mixture is fit for k = 1..4, and BIC picks k unless you force it. Clusters on neighboring sites merge when their templates and footprints agree and their cross-correlogram shows a shared refractory dip or the same spikes counted twice. A cluster that breaks the refractory period and is bimodal in amplitude is split.
-
-Changing only the cluster count or the merge settings reuses the filtered file and the spike index.

@@ -6,6 +6,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from silicon_sort.gui.icon import app_icon
 from silicon_sort.gui.main_window import MainWindow, preload
 from silicon_sort.gui.theme import apply_dark_theme
 
@@ -13,7 +14,10 @@ from silicon_sort.gui.theme import apply_dark_theme
 def launch(dat_path: str = "", cfg_path: str = "") -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     apply_dark_theme(app)
+    icon = app_icon()
+    app.setWindowIcon(icon)
     window = MainWindow(dat_path, cfg_path)
+    window.setWindowIcon(icon)
     preload(window, dat_path, cfg_path)
     window.showMaximized()
     window.fit_layout()

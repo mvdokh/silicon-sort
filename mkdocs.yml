@@ -1,0 +1,41 @@
+site_name: Silicon Sort
+site_description: Spike sorting for low-channel brainstem silicon probes
+site_url: https://mvdokh.github.io/silicon-sort/
+repo_url: https://github.com/mvdokh/silicon-sort
+repo_name: mvdokh/silicon-sort
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: deep purple
+    accent: teal
+  logo: assets/spike-sorter-icon-v6.svg
+  favicon: assets/spike-sorter-icon-v6.svg
+  features:
+    - navigation.sections
+    - navigation.instant
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Quick start: quickstart.md
+  - Load: load.md
+  - Detect: detect.md
+  - Clusters: clusters.md
+  - Autosort: autosort.md
+  - Pipeline: pipeline.md
+  - Command line: cli.md
