@@ -8,7 +8,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, Qt, Signal, QRectF
 
-from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+from silicon_sort.gui.widgets.plot_style import hide_axes, rest_range, show_axes, style_plot
 from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QScrollBar, QSpinBox, QVBoxLayout, QWidget
 
@@ -38,6 +38,7 @@ class TraceView(QWidget):
         style_plot(self.plot)
         self.plot.setLabel("bottom", "Time", units="s")
         self.plot.setLabel("left", "Channel")
+        hide_axes(self.plot)
         self.bar = QScrollBar(Qt.Orientation.Horizontal)
         self.bar.setToolTip("Scroll through the recording. The mouse wheel does the same. Hold Ctrl and scroll to zoom.")
         self.time_box = QDoubleSpinBox()
@@ -243,6 +244,7 @@ class TraceView(QWidget):
             self.plot.getAxis("left").setTicks(None)
             rest_range(self.plot)
             return
+        show_axes(self.plot)
         start = int(self.start_s * self.sampling_rate)
         stop = min(self.n_samples, start + max(2, int(self.window_s * self.sampling_rate)))
         if stop <= start:
@@ -253,21 +255,31 @@ class TraceView(QWidget):
             scale = np.median(np.std(decimated, axis=0))
             self.spacing = float(max(8 * scale, 50.0))
         self._sync_controls()
-        row_of = {int(channel): row for row, channel in enumerate(self.order)}
+        row_of = {int(channel): row for row, channel in enumerate(self.order) if int(channel) >= 0}
         self.row_labels = []
         ticks: list[tuple[float, str]] = []
         for row, channel in enumerate(self.order):
             channel = int(channel)
+            offset = row * self.spacing
+            if channel < 0:
+                self.row_labels.append("")
+                ticks.append((offset, ""))
+                continue
             label = str(channel + 1)
             self.row_labels.append(label)
-            offset = row * self.spacing
             ticks.append((offset, label))
+            masked = bool(self.mask[channel]) if channel < self.mask.size else False
             picked = channel in self.highlight if self.multi_select else channel == self.selected
-            color = _channel_color(channel, masked=bool(self.mask[channel]), selected=picked)
+            color = _channel_color(channel, masked=masked, selected=picked)
             width = 2.4 if channel == self.selected else 1.15
-            curve = self.plot.plot(time, decimated[:, channel] + offset, pen=pg.mkPen(color, width=width))
-            self._curves.append(curve)
-            if self.threshold_uv is not None and np.isfinite(self.threshold_uv[channel]):
+            if channel < decimated.shape[1]:
+                curve = self.plot.plot(time, decimated[:, channel] + offset, pen=pg.mkPen(color, width=width))
+                self._curves.append(curve)
+            if (
+                self.threshold_uv is not None
+                and channel < self.threshold_uv.size
+                and np.isfinite(self.threshold_uv[channel])
+            ):
                 level = offset - abs(float(self.threshold_uv[channel]))
                 line = self.plot.plot(
                     time,
@@ -481,7 +493,10 @@ class TraceView(QWidget):
             return
         point = self.plot.plotItem.vb.mapSceneToView(event.scenePos())
         row = int(np.clip(round(point.y() / self.spacing), 0, self.order.size - 1))
-        self.selected = int(self.order[row])
+        channel = int(self.order[row])
+        if channel < 0:
+            return
+        self.selected = channel
         sample = int(np.clip(round(float(point.x()) * self.sampling_rate), 0, max(self.n_samples - 1, 0)))
         additive = bool(event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier))
         if self.multi_select:

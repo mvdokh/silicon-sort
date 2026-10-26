@@ -7,7 +7,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
-from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+from silicon_sort.gui.widgets.plot_style import hide_axes, rest_range, show_axes, style_plot
 
 
 class HistogramPlot(pg.PlotWidget):
@@ -16,6 +16,7 @@ class HistogramPlot(pg.PlotWidget):
         _relax(self)
         self.setLabel("bottom", "Amplitude", units="µV")
         self.setLabel("left", "Count")
+        hide_axes(self)
         self.item = pg.BarGraphItem(x=[], height=[], width=1)
         self.addItem(self.item)
 
@@ -28,6 +29,7 @@ class HistogramPlot(pg.PlotWidget):
         centers = 0.5 * (edges[:-1] + edges[1:])
         width = float(edges[1] - edges[0]) if edges.size > 1 else 1.0
         self.item.setOpts(x=centers, height=counts, width=width, brush=pg.mkBrush("#f4f6fb"))
+        show_axes(self)
         self.setXRange(float(edges[0]), float(edges[-1]), padding=0.02)
         self.setYRange(0, max(float(counts.max()) * 1.08, 1.0), padding=0)
 
@@ -38,6 +40,7 @@ class RatePlot(pg.PlotWidget):
         _relax(self)
         self.setLabel("bottom", "Time", units="s")
         self.setLabel("left", "Spikes / bin")
+        hide_axes(self)
         self.curve = self.plot(pen=pg.mkPen("#98c379", width=2))
 
     def set_times(self, times_s: np.ndarray, duration_s: float, bin_s: float = 1.0) -> None:
@@ -49,6 +52,7 @@ class RatePlot(pg.PlotWidget):
         counts, edges = np.histogram(times_s, bins=bins, range=(0, bins * bin_s))
         centers = 0.5 * (edges[:-1] + edges[1:])
         self.curve.setData(centers, counts)
+        show_axes(self)
         self.getViewBox().autoRange()
 
 
@@ -58,6 +62,7 @@ class ScatterPreview(pg.PlotWidget):
         style_plot(self)
         self.setLabel("bottom", xlabel)
         self.setLabel("left", ylabel)
+        hide_axes(self)
         self.scatter = pg.ScatterPlotItem(size=7, pxMode=True)
         self.addItem(self.scatter)
 
@@ -68,6 +73,7 @@ class ScatterPreview(pg.PlotWidget):
             return
         brushes = [_brush(0 if labels is None else int(label)) for label in (np.zeros(x.size, dtype=int) if labels is None else labels)]
         self.scatter.setData(x=x, y=y, brush=brushes, pen=None)
+        show_axes(self)
         self.getViewBox().autoRange()
 
 
@@ -77,6 +83,7 @@ class WaveformPreview(pg.PlotWidget):
         style_plot(self)
         self.setLabel("bottom", "Sample")
         self.setLabel("left", "µV")
+        hide_axes(self)
         self._curves: list[pg.PlotDataItem] = []
 
     def set_waveforms(self, waveforms: np.ndarray, labels: np.ndarray) -> None:
@@ -91,6 +98,7 @@ class WaveformPreview(pg.PlotWidget):
         for row in range(0, waveforms.shape[0], step):
             curve = self.plot(time, waveforms[row], pen=pg.mkPen(_color(int(labels[row])), width=1))
             self._curves.append(curve)
+        show_axes(self)
         self.getViewBox().autoRange()
 
 
@@ -100,6 +108,7 @@ class PRPlot(pg.PlotWidget):
         _relax(self)
         self.setLabel("bottom", "Threshold (MAD)")
         self.setLabel("left", "Precision / recall")
+        hide_axes(self)
         self.addLegend(offset=(4, 4))
         self._curves: list[pg.PlotDataItem] = []
 
@@ -144,6 +153,7 @@ class PRPlot(pg.PlotWidget):
                 title += f" ({delta:+.2f})"
             self.addItem(pg.InfiniteLine(pos=abs(float(operating)), angle=90, pen=pg.mkPen("#e5c07b", width=1)))
         self.setTitle(title)
+        show_axes(self)
         self.getViewBox().autoRange()
 
 

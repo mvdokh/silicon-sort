@@ -258,6 +258,7 @@ class LoadTab(QWidget):
             self.window.mask_array(),
         )
         self.window.refresh_probe()
+        self.window.detect.sync_recording()
         self.window.log(f"{recording.n_samples / recording.sampling_rate:.1f} s, {recording.n_channels} channels")
 
     def suggest(self) -> None:

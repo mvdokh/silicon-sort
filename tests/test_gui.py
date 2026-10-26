@@ -19,13 +19,13 @@ from PySide6.QtWidgets import QApplication
 from silicon_sort.detect.benchmark import BenchmarkCurve
 from silicon_sort.detect.detect import SpikeIndex
 from silicon_sort.gui.main_window import MainWindow
-from silicon_sort.gui.theme import apply_dark_theme
+from silicon_sort.gui.theme import apply_theme
 from silicon_sort.synthetic import write_poly2_cfg, write_recording
 
 
 def _app() -> QApplication:
     application = QApplication.instance() or QApplication([])
-    apply_dark_theme(application)
+    apply_theme(application, "One Dark Pro", 11)
     return application
 
 
@@ -54,7 +54,7 @@ def test_window_icon_loads():
     window.close()
 
 
-def test_empty_plots_show_ticks_without_axis_lines():
+def test_empty_plots_hide_axes_until_data_is_shown(tmp_path: Path):
     from PySide6.QtCore import Qt
 
     _app()
@@ -72,19 +72,101 @@ def test_empty_plots_show_ticks_without_axis_lines():
         window.clusters.pca,
     )
     for plot in plots:
+        assert not plot.getAxis("left").isVisible()
+        assert not plot.getAxis("bottom").isVisible()
+        assert not plot.getAxis("top").isVisible()
+        assert not plot.getAxis("right").isVisible()
         left = plot.getAxis("left")
         bottom = plot.getAxis("bottom")
         assert left.pen().style() == Qt.PenStyle.NoPen
         assert bottom.pen().style() == Qt.PenStyle.NoPen
-        assert left.tickPen().style() != Qt.PenStyle.NoPen
-        assert not plot.getAxis("top").isVisible()
-        assert not plot.getAxis("right").isVisible()
         x_range, y_range = plot.viewRange()
         assert abs(x_range[1] - x_range[0]) < 5
         assert abs(y_range[1] - y_range[0]) < 5
-    y_axis = window.load.probe.getAxis("left")
+
+    dat = tmp_path / "session.dat"
+    cfg = tmp_path / "probe.cfg"
+    write_poly2_cfg(cfg, n_channels=8)
+    write_recording(dat, n_channels=8, sampling_rate=30000, duration_s=0.05, seed=1)
+    window.load.n_channels.setValue(8)
+    window.load.sampling_rate.setValue(30000)
+    window.load.dat.setText(str(dat))
+    window.load.cfg.setText(str(cfg))
+    window.load.show_recording()
     QApplication.processEvents()
+    assert window.load.trace.plot.getAxis("left").isVisible()
+    assert window.load.trace.plot.getAxis("bottom").isVisible()
+    assert window.load.probe.getAxis("left").isVisible()
+    y_axis = window.load.probe.getAxis("left")
     assert y_axis.width() > y_axis.label.boundingRect().height() + 24
+    window.close()
+
+
+def test_detect_shows_traces_before_detection_and_switches_views(tmp_path: Path):
+    _app()
+    dat = tmp_path / "session.dat"
+    cfg = tmp_path / "probe.cfg"
+    write_poly2_cfg(cfg, n_channels=8)
+    write_recording(dat, n_channels=8, sampling_rate=30000, duration_s=0.1, seed=1)
+    window = MainWindow(str(dat), str(cfg))
+    window.load.n_channels.setValue(8)
+    window.load.sampling_rate.setValue(30000)
+    window.load.scale.setValue(0.195)
+    window.show()
+    window.load.show_recording()
+    QApplication.processEvents()
+
+    assert window.detect.trace.reader is not None
+    assert window.detect.trace.n_channels == 8
+    assert window.detect.trace.spikes_t is None
+    assert window.detect.right.currentWidget() is window.detect.probe_waves
+    assert window.detect.probe_waves.positions.shape[0] == 8
+    assert list(window.detect.trace.order) == list(range(8))
+
+    window.detect.view_mode.setCurrentText("Single channel")
+    QApplication.processEvents()
+    assert window.detect.right.currentWidget() is window.detect.side
+    assert list(window.detect.trace.order) == [window.detect._channel_id]
+
+    window.detect.view_mode.setCurrentText("Proximity")
+    window.detect.proximity_radius.setValue(1)
+    QApplication.processEvents()
+    assert len(window.detect.trace.order) == 3
+    assert window.detect._channel_id in set(window.detect.trace.order)
+    assert window.detect.steps.currentIndex() == 2
+    assert window.detect.proximity_radius.parent() is not None
+
+    # Edge site: empty slots for missing neighbors above/below.
+    order = list(window.detect._proximity_channels(0))
+    assert order[1] == 0
+    assert -1 in order
+
+    window.detect._open_single(2)
+    QApplication.processEvents()
+    assert window.detect.view_mode.currentText() == "Single channel"
+    assert window.detect._channel_id == 2
+    assert list(window.detect.trace.order) == [2]
+    window.close()
+
+
+def test_settings_tab_switches_theme_and_font_size():
+    _app()
+    window = MainWindow()
+    window.show()
+    QApplication.processEvents()
+    assert window.tabs.tabText(4) == "Settings"
+    window.tabs.setCurrentIndex(4)
+    QApplication.processEvents()
+    assert window.stack.currentWidget() is window.settings_tab.form
+    window.settings_tab.theme.setCurrentText("Solarized Light")
+    window.settings_tab.font_slider.setValue(16)
+    QApplication.processEvents()
+    assert window.settings_tab.font_label.text() == "16 px"
+    from silicon_sort.gui.theme import current_font_px, current_theme
+
+    assert current_theme().name == "Solarized Light"
+    assert current_font_px() == 16
+    assert "fdf6e3" in QApplication.instance().styleSheet().lower()
     window.close()
 
 
@@ -180,10 +262,15 @@ def test_window_loads_masks_and_stays_responsive(tmp_path: Path):
     window.load.trace.gap_box.setValue(1)
     assert window.detect.view.orientation() == Qt.Orientation.Horizontal
     assert window.detect.view.widget(0) is window.detect.trace
-    side = window.detect.view.widget(1)
-    assert side.widget(0) is window.detect.review
-    assert side.widget(1) is window.detect.histogram
+    assert window.detect.view.widget(1) is window.detect.right
+    assert window.detect.right.widget(0) is window.detect.probe_waves
+    assert window.detect.right.widget(1) is window.detect.side
+    assert window.detect.side.widget(0) is window.detect.review
+    assert window.detect.side.widget(1) is window.detect.histogram
     assert window.detect.review.good_button.text() == "Good"
+    assert window.detect.trace.reader is not None
+    assert window.detect.trace.spikes_t is None
+    assert window.detect.right.currentWidget() is window.detect.probe_waves
     assert set(window.load.trace.row_labels) == {str(channel) for channel in range(1, 9)}
     pens = [curve.opts["pen"].color().name() for curve in window.load.trace._curves]
     assert len(set(pens)) == 8
@@ -345,7 +432,8 @@ def test_review_draws_every_waveform_and_seeks_the_trace(tmp_path: Path):
     assert ADDED_MISS_COLOR in trace._boxes.colors
     pen = review._curves[-1].opts["pen"]
     assert pen.color().name().lower() == ADDED_MISS_COLOR
-    assert window.detect.precision.parent() is window.detect.form
+    assert window.detect.form.isAncestorOf(window.detect.precision)
+    assert window.detect.steps.widget(0).isAncestorOf(window.detect.precision)
     assert window.detect.view.widget(1).indexOf(window.detect.precision) < 0
     window.close()
 

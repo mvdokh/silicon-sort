@@ -215,5 +215,11 @@ def test_review_reuses_the_first_detection(tmp_path: Path, monkeypatch):
         again = pipeline.run_detect()
         assert calls["n"] == 1
         assert int(spikes.times[0]) not in set(again.times[again.channels == spikes.channels[0]].tolist())
+        other = int(again.channels[0]) if again.n_spikes else 0
+        target = (other + 1) % n_channels
+        before_other = int(np.sum(again.channels == other))
+        pipeline.redetect_channels([target])
+        assert calls["n"] == 2
+        assert int(np.sum(pipeline.spikes.channels == other)) == before_other
     finally:
         pipeline.close()

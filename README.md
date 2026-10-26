@@ -25,7 +25,7 @@ To open a session immediately:
 silicon-sort gui --dat amplifier.dat --cfg electrode.cfg
 ```
 
-The window fills the screen. Parameters sit on the left. The log is a short strip under that column.
+The window fills the screen. Parameters sit on the left. The log is a short strip under that column. The **Settings** tab chooses a VS Code color theme and a text size; both are kept for the next launch. Plot axes stay hidden until a recording is shown.
 
 ## 1 Load
 
@@ -43,7 +43,7 @@ For an Intan RHD2132 / Neuronexus A1x32-Poly2 recording the usual values are 32 
 
 **Threshold MAD** is the detection line in noise units. Negative values look for downward spikes. The default is −5, about five robust standard deviations below zero. **Neighbor radius**, **Neighbor fraction**, and **Min neighbors** require a nearby site to cross a lower threshold at the same time. **Dead time** blocks a second spike on the same site for that many milliseconds. **Artifact fraction** and **Artifact MAD** mark coincident deflections, such as movement, and keep them out of clustering. **Template match** is an optional second pass: each channel's median waveform is scanned at 60% of the threshold, and new spikes are added only when they match that shape. It does not remove spikes from the first pass.
 
-After detection, the trace shows a box over each spike for the full height of its channel. The panel on the right is the waveform review, the amplitude histogram, and the benchmark plot.
+After Load, Detect already shows the recording. Spike boxes appear only after detection. **View** chooses Multi channel (all traces beside the probe waveforms; double-click a site for Single channel), Single channel, or Proximity (2–5 nearby channels). Single and Proximity keep the review panel on the right.
 
 **Suggest** builds a template from the spikes already found on the current channel. Detections that do not match it are listed as suggested artifacts. A lower-threshold scan of the same template lists likely misses. Click a spike on the trace to open the closest event on that channel. **Click** can instead mark that spike as a good or bad example, or add a missed spike that snaps to the channel template. **Good** and **Bad** do the same for the event on screen. **Bad examples** and **Good examples** choose what **Detect again** does with those examples: only the spikes you marked, the same shape on that channel, or the same shape on every channel.
 

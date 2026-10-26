@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pyqtgraph as pg
 
-_TICK = "#d7dbe2"
+from silicon_sort.gui.theme import current_theme
 
 
 class _Axis(pg.AxisItem):
@@ -30,7 +30,7 @@ class _Axis(pg.AxisItem):
 
 
 def style_plot(plot: pg.PlotWidget) -> None:
-    """Ticks and numbers only, held on a small range until data arrives."""
+    """Ticks and numbers only. Axes stay hidden until data is shown."""
     item = plot.getPlotItem()
     item.setAxisItems({"left": _Axis("left"), "bottom": _Axis("bottom")})
     item.hideButtons()
@@ -41,16 +41,46 @@ def style_plot(plot: pg.PlotWidget) -> None:
     item.layout.setContentsMargins(0, 0, 0, 0)
     item.getViewBox().setBorder(pg.mkPen(None))
     item.getViewBox().setMouseEnabled(x=False, y=False)
-    for name in ("left", "bottom"):
-        axis = item.getAxis(name)
-        axis.setPen(None)
-        axis.setTextPen(_TICK)
-        axis.setTickPen(_TICK)
-        axis.setStyle(tickTextOffset=4, autoExpandTextSpace=True, autoReduceTextSpace=False)
+    paint_axes(plot)
     item.disableAutoRange()
     rest_range(plot)
 
 
+def paint_axes(plot: pg.PlotWidget) -> None:
+    """Refresh axis pens from the active theme without changing visibility."""
+    tick = current_theme().plot_fg
+    item = plot.getPlotItem()
+    for name in ("left", "bottom"):
+        axis = item.getAxis(name)
+        axis.setPen(None)
+        axis.setTextPen(tick)
+        axis.setTickPen(tick)
+        axis.setStyle(tickTextOffset=4, autoExpandTextSpace=True, autoReduceTextSpace=False)
+
+
+def show_axes(plot: pg.PlotWidget) -> None:
+    item = plot.getPlotItem()
+    paint_axes(plot)
+    item.showAxis("left")
+    item.showAxis("bottom")
+
+
+def hide_axes(plot: pg.PlotWidget) -> None:
+    item = plot.getPlotItem()
+    item.hideAxis("left")
+    item.hideAxis("bottom")
+    item.hideAxis("top")
+    item.hideAxis("right")
+
+
 def rest_range(plot: pg.PlotWidget) -> None:
+    hide_axes(plot)
     plot.setXRange(0, 1, padding=0)
     plot.setYRange(0, 1, padding=0)
+
+
+def retint_plot(plot: pg.PlotWidget) -> None:
+    """Apply the current theme colors to an existing plot."""
+    theme = current_theme()
+    plot.setBackground(theme.plot_bg)
+    paint_axes(plot)

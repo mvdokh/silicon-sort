@@ -6,6 +6,8 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
+    QDockWidget,
     QFileDialog,
     QMainWindow,
     QMessageBox,
@@ -16,13 +18,15 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTabWidget,
 )
-from PySide6.QtWidgets import QDockWidget
 
 from silicon_sort.gui.icon import app_icon
 from silicon_sort.gui.tabs.autosort_tab import AutosortTab
 from silicon_sort.gui.tabs.clusters_tab import ClustersTab
 from silicon_sort.gui.tabs.detect_tab import DetectTab
 from silicon_sort.gui.tabs.load_tab import LoadTab
+from silicon_sort.gui.tabs.settings_tab import SettingsTab
+from silicon_sort.gui.theme import apply_theme
+from silicon_sort.gui.widgets.plot_style import retint_plot
 from silicon_sort.gui.workers import FunctionWorker
 from silicon_sort.pipeline import Pipeline
 from silicon_sort.settings import PipelineSettings, load_settings, save_settings
@@ -53,7 +57,8 @@ class MainWindow(QMainWindow):
         self.detect = DetectTab(self)
         self.clusters = ClustersTab(self)
         self.autosort = AutosortTab(self)
-        self._stages = (self.load, self.detect, self.clusters, self.autosort)
+        self.settings_tab = SettingsTab(self)
+        self._stages = (self.load, self.detect, self.clusters, self.autosort, self.settings_tab)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -62,6 +67,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.detect.view, "2  Detect")
         self.tabs.addTab(self.clusters.view, "3  Clusters")
         self.tabs.addTab(self.autosort.view, "4  Autosort")
+        self.tabs.addTab(self.settings_tab.view, "Settings")
         self.tabs.currentChanged.connect(self._stage_changed)
         self.setCentralWidget(self.tabs)
 
@@ -71,8 +77,8 @@ class MainWindow(QMainWindow):
         self._parameters = QDockWidget("Parameters", self)
         self._parameters.setWidget(self.stack)
         self._parameters.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        self._parameters.setMinimumWidth(300)
-        self._parameters.setMaximumWidth(420)
+        self._parameters.setMinimumWidth(240)
+        self._parameters.setMaximumWidth(340)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._parameters)
 
         self.log_view = QPlainTextEdit()
@@ -80,7 +86,7 @@ class MainWindow(QMainWindow):
         self.log_view.setMaximumBlockCount(400)
         self._log = QDockWidget("Log", self)
         self._log.setWidget(self.log_view)
-        self._log.setMaximumHeight(140)
+        self._log.setMaximumHeight(240)
         self.splitDockWidget(self._parameters, self._log, Qt.Orientation.Vertical)
 
         self._build_menu()
@@ -101,6 +107,35 @@ class MainWindow(QMainWindow):
         self.detect.collect()
         self.clusters.collect()
         self.autosort.collect()
+        self.settings_tab.collect()
+
+    def apply_appearance(self, theme_name: str, font_px: int) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        apply_theme(app, theme_name, font_px)
+        for plot in self._plots():
+            retint_plot(plot)
+        self.settings_tab.preview.setText(
+            f"Appearance\n\n"
+            f"Theme: {theme_name}\n"
+            f"Text size: {font_px} px\n\n"
+            "The choice is kept for the next launch."
+        )
+
+    def _plots(self):
+        return (
+            self.load.probe,
+            self.load.trace.plot,
+            self.detect.trace.plot,
+            self.detect.probe_waves,
+            self.detect.histogram,
+            self.detect.precision,
+            self.detect.review.plot,
+            self.clusters.waves,
+            self.clusters.pca,
+            self.clusters.amplitude,
+        )
 
     def mask_array(self) -> np.ndarray:
         recording = self.pipeline.recording
@@ -160,6 +195,7 @@ class MainWindow(QMainWindow):
         mask = self.mask_array()
         self.load.trace.set_mask(mask)
         self.detect.trace.set_mask(mask)
+        self.detect.probe_waves.set_mask(mask)
         self.refresh_probe()
 
     def toggle_mask(self, channel: int) -> None:
@@ -293,11 +329,17 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(busy)
 
     def fit_layout(self) -> None:
-        self.resizeDocks([self._parameters], [360], Qt.Orientation.Horizontal)
-        self.resizeDocks([self._parameters, self._log], [900, 120], Qt.Orientation.Vertical)
+        self.resizeDocks([self._parameters], [260], Qt.Orientation.Horizontal)
+        self.resizeDocks([self._parameters, self._log], [720, 200], Qt.Orientation.Vertical)
 
     def _stage_changed(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
+        if index == 1 and self.pipeline.recording is not None:
+            self.detect.sync_recording()
+            if self.pipeline.spikes is not None:
+                self.detect.sync_review_marks()
+                self.detect._fill_probe_waveforms()
+                self.detect._apply_view_mode()
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")

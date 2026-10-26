@@ -64,16 +64,28 @@ def refine_with_review(
     cancel: CancelToken | None = None,
     bad_scope: str = "channel",
     good_scope: str = "channel",
+    limit_channels: np.ndarray | None = None,
 ) -> SpikeIndex:
     """Drop events like the bad marks, keep the good marks, and find similar missed spikes.
 
     ``bad_scope`` and ``good_scope`` are ``marked``, ``channel``, or ``all``.
     Marked applies each example only to itself. Channel also matches the same
     shape on that example's channel. All matches the shape on every channel.
+
+    When ``limit_channels`` is set, only those channels are changed; spikes on
+    other channels pass through untouched.
     """
     review_times = np.asarray(review_times, dtype=np.int64)
     review_channels = np.asarray(review_channels, dtype=np.int32)
     review_labels = np.asarray(review_labels, dtype=np.int8)
+    limit: set[int] | None = None
+    if limit_channels is not None:
+        limit = {int(channel) for channel in np.asarray(limit_channels, dtype=int)}
+        if review_labels.size:
+            on_limit = np.array([int(channel) in limit for channel in review_channels], dtype=bool)
+            review_times = review_times[on_limit]
+            review_channels = review_channels[on_limit]
+            review_labels = review_labels[on_limit]
     if review_labels.size == 0 or not np.any(review_labels):
         return spikes
 
@@ -92,6 +104,8 @@ def refine_with_review(
     artifact = np.asarray(spikes.artifact, dtype=bool)
     if times.size:
         bad_hit = _near_label(times, channels, review_times, review_channels, review_labels, -1, tolerance)
+        if limit is not None:
+            bad_hit = bad_hit & np.array([int(channel) in limit for channel in channels], dtype=bool)
         keep = ~bad_hit
         times, channels, amplitudes, artifact = times[keep], channels[keep], amplitudes[keep], artifact[keep]
 
@@ -116,6 +130,8 @@ def refine_with_review(
     found_c: list[int] = []
     found_a: list[float] = []
     pairs = _good_pairs(good_template, noise_mad, good_scope)
+    if limit is not None:
+        pairs = [(channel, template) for channel, template in pairs if int(channel) in limit]
     for index, (channel, template) in enumerate(pairs):
         if cancel is not None and cancel.cancelled():
             raise Cancelled("Detection cancelled.")
@@ -183,7 +199,14 @@ def refine_with_review(
             protected,
             scope=bad_scope,
         )
-    keep = protected | ~(rejected | shaped)
+    drop = rejected | shaped
+    if limit is not None:
+        on_limit = np.array([int(channel) in limit for channel in merged.channels], dtype=bool)
+        drop = drop & on_limit
+        protected = protected & on_limit
+        keep = ~on_limit | protected | ~drop
+    else:
+        keep = protected | ~drop
     return SpikeIndex(merged.times[keep], merged.channels[keep], merged.amplitudes[keep], merged.artifact[keep])
 
 

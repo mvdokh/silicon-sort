@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QLabel, QPushButton, QVB
 
 from silicon_sort.detect.suggestions import align_click, suggest_channel
 from silicon_sort.gui.widgets.parameters import combo
-from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+from silicon_sort.gui.widgets.plot_style import hide_axes, rest_range, show_axes, style_plot
 from silicon_sort.gui.widgets.trace_view import ADDED_MISS_COLOR
 
 
@@ -71,7 +71,7 @@ class EventReview(QWidget):
             (self.clear_button, "Remove the good or bad mark from this event."),
             (
                 self.apply_button,
-                "Run detection again. Good and bad examples are applied with the choices above.",
+                "Run detection again for the current view. In Single or Proximity, only those channels are redetected. Good and bad examples are applied with the choices above.",
             ),
         ):
             button.setToolTip(tip)
@@ -82,6 +82,7 @@ class EventReview(QWidget):
         style_plot(self.plot)
         self.plot.setLabel("bottom", "Time", units="ms")
         self.plot.setLabel("left", "µV")
+        hide_axes(self.plot)
         self.plot.setMinimumHeight(140)
         self._curves: list[pg.PlotDataItem] = []
         self.plot.scene().sigMouseClicked.connect(self._on_click)
@@ -118,7 +119,7 @@ class EventReview(QWidget):
         self.good_button.clicked.connect(lambda: self._mark(1))
         self.bad_button.clicked.connect(lambda: self._mark(-1))
         self.clear_button.clicked.connect(lambda: self._mark(0))
-        self.apply_button.clicked.connect(lambda: self.window.detect.run_detection())
+        self.apply_button.clicked.connect(self._detect_again)
         self.suggest_button.clicked.connect(self.suggest)
         self.mode.currentTextChanged.connect(lambda _text: self.refresh())
 
@@ -174,6 +175,13 @@ class EventReview(QWidget):
         self.selected = int(np.argmin(np.abs(visible_times - nearest)))
         self.refresh()
 
+    def _detect_again(self) -> None:
+        mode = self.window.detect.view_mode_text()
+        if mode == "Multi channel":
+            self.window.detect.run_detection()
+        else:
+            self.window.detect.redetect_current_scope()
+
     def suggest(self) -> None:
         spikes = self.window.pipeline.spikes
         recording = self.window.pipeline.recording
@@ -183,20 +191,23 @@ class EventReview(QWidget):
         channel = int(self.channel)
         mad = self.window.pipeline.noise_mad
         settings = self.window.settings
+        n_samples = int(recording.n_samples)
+        reader = self.window.signal_reader
 
         def work(token, progress):
             del token
             progress(0.2, f"Scoring channel {channel + 1}")
-            with self.window.pipeline.open_signal() as signal:
-                trace = np.asarray(signal[:, channel], dtype=np.float32)
             chosen = np.flatnonzero(spikes.channels == channel)
             noise = 1.0 if mad is None or channel >= mad.size or not np.isfinite(mad[channel]) else float(mad[channel])
             return suggest_channel(
-                trace,
+                None,
                 spikes.times[chosen],
                 spikes.artifact[chosen],
                 settings,
                 noise,
+                reader=reader,
+                channel=channel,
+                n_samples=n_samples,
             )
 
         def done(result) -> None:
@@ -264,6 +275,7 @@ class EventReview(QWidget):
         if selected_wave.size and np.isfinite(selected_wave).all():
             selected_color = ADDED_MISS_COLOR if bool(added[self.selected]) else "#f2f4f8"
             self._curves.append(self.plot.plot(time_ms, selected_wave, pen=pg.mkPen(selected_color, width=2.4)))
+        show_axes(self.plot)
         if time_ms.size:
             self.plot.setXRange(float(time_ms[0]), float(time_ms[-1]), padding=0.02)
         finite = self._waves[np.isfinite(self._waves)] if self._waves.size else np.zeros(0)

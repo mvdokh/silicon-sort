@@ -1,8 +1,18 @@
 # Detect
 
-Detection thresholds each channel in units of its own noise, asks a neighbor to agree, and writes a spike index. The view is the traces, a waveform review, an amplitude histogram for the selected channel, and a precision/recall plot.
+Detection thresholds each channel in units of its own noise, asks a neighbor to agree, and writes a spike index. After Load, the recording is already on the Detect stage. Spike boxes appear only after detection.
 
-## Parameters
+The left panel mirrors Load: three steps, and options for one mode stay on that step.
+
+| Step | What you see | Options on that step |
+| --- | --- | --- |
+| Multi | All traces beside a narrow probe map of waveforms. Double-click a site to open Single. | Threshold, neighbors, dead time, artifacts, template match, **Run detection**, **Run benchmark**, and the precision/recall plot. |
+| Single | One channel's traces plus the review panel. | **Detect again (this channel)** — only that channel is redetected. |
+| Proximity | The center channel with `±` neighbors along the probe. Missing neighbors leave an empty row. | **Nearby ±**, and whether **Detect again** covers the center only or every real channel in the view. |
+
+The amplitude histogram stays under the review panel.
+
+## Parameters (Multi)
 
 | Control | Default | What it does |
 | --- | --- | --- |
@@ -51,25 +61,25 @@ The waveform panel draws every spike on the current channel, not a short window 
 | Previous / next event | Moves the waveform and centers the trace on that time. The spike on the trace is gold. |
 | Click a spike on the trace | Opens the event on that channel closest to the click, and highlights it on the trace. |
 | Click | What the click does. **Select closest** only opens the event. **Mark good** or **Mark bad** stores it as an example. **Add missed spike** snaps the click to the channel template, draws a teal box around that spike, and uses the same color in the waveform view. |
-| Suggest | Scores the current channel. |
+| Suggest | Scores the current channel from spike snippets and short excerpts around detections (not a full-file read). |
 | Suggested artifacts | Detections that do not match the channel template, plus events already flagged as artifacts. |
-| Suggested misses | Times where the same template matches below the detection threshold and no spike was kept. |
+| Suggested misses | Times near existing spikes where the same template matches below the detection threshold and no spike was kept. |
 | Good | Store the event on screen as a good example. |
 | Bad | Store the event on screen as a bad example. |
 | Clear | Remove the mark. |
 | Bad examples | **Marked only** drops the bad examples. **Similar on this channel** also drops spikes on that channel whose shape matches (cosine at least 0.9), unless they are closer to a good example. **Similar on every channel** uses the same test on the whole probe. |
 | Good examples | **Marked only** keeps the good examples. **Similar on this channel** also searches that channel below threshold for the same shape. **Similar on every channel** runs that search on every unmasked channel. |
-| Detect again | Runs detection with the examples and the two choices above. |
+| Detect again | On Multi, re-runs the whole file. On Single or Proximity, redetects only the channels for that view (center or all shown), and leaves other channels alone. |
 
-**Suggest** does not train a network. It takes the median waveform of the spikes that resemble each other, flags detections whose cosine to that waveform is below 0.75, and scans the channel at a lower threshold (45% of the detection threshold, and not above the template-match fraction) for up to 24 misses.
+**Suggest** does not train a network. It takes the median waveform of the spikes that resemble each other, flags detections whose cosine to that waveform is below 0.75, and scans short windows around detections at a lower threshold (45% of the detection threshold, and not above the template-match fraction) for up to 24 misses.
 
 ## Benchmark
 
 **Run benchmark** scores about one second of the recording. It uses spikes already detected, and it does not detect the rest of the file again. It blanks those spikes, plants a known waveform at several amplitudes, and sweeps the threshold.
 
-The precision and recall plot sits under **Run detection** and **Run benchmark**. It draws one precision curve per run and the recall of the latest run. The title is the precision at your current threshold, and the change from the previous run when there is one. The gold line is that threshold. This score is on the planted excerpt. It is a check that the detector settings still recover a known shape, not a count of your review marks.
+The precision and recall plot sits on the Multi step under **Run detection** and **Run benchmark**. It draws one precision curve per run and the recall of the latest run. The title is the precision at your current threshold, and the change from the previous run when there is one. The gold line is that threshold. This score is on the planted excerpt. It is a check that the detector settings still recover a known shape, not a count of your review marks.
 
-**Detect again** reuses that first pass when only the examples changed, then applies the good and bad marks. It detects the whole file again only when the recording or the detector settings change.
+Full **Run detection** reuses the first pass when only the examples changed, then applies the good and bad marks. It detects the whole file again only when the recording or the detector settings change. Channel-scoped **Detect again** keeps spikes on other sites and re-runs the detector only on the chosen channels.
 
 ## Traces
 

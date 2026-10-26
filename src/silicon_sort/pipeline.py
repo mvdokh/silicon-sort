@@ -257,6 +257,105 @@ class Pipeline:
             progress(1.0, f"Detected {spikes.clean().n_spikes} spikes")
         return spikes
 
+    def redetect_channels(
+        self,
+        channels: list[int] | np.ndarray,
+        progress: Progress | None = None,
+        cancel: CancelToken | None = None,
+    ) -> SpikeIndex:
+        """Re-run detection only on ``channels``, keeping spikes on other sites."""
+        targets = sorted({int(channel) for channel in np.asarray(channels, dtype=int) if int(channel) >= 0})
+        if not targets:
+            if self.spikes is None:
+                return self.run_detect(progress=progress, cancel=cancel)
+            return self.spikes
+        if self.spikes is None or self.noise_mad is None:
+            return self.run_detect(progress=progress, cancel=cancel)
+        if self.settings.preprocess:
+            self.run_preprocess(progress=progress, cancel=cancel, force=False)
+        else:
+            self.open()
+        recording, probe = self.recording, self.probe
+        assert recording is not None and probe is not None
+        cache = self.cache()
+        mask = self._mask(recording.n_channels)
+        peak = np.asarray(targets, dtype=int)
+        if progress is not None:
+            progress(0.1, f"Redetecting {len(targets)} channel{'s' if len(targets) != 1 else ''}")
+        _check(cancel)
+        with self.open_signal() as signal:
+            whitener = self.whitener
+            if whitener is None:
+                whitener = np.eye(recording.n_channels, dtype=np.float32)
+            subset, noise_mad, whitener = detect_traces(
+                signal,
+                probe,
+                self.settings,
+                mask,
+                whitener=whitener,
+                noise_mad=self.noise_mad,
+                progress=progress,
+                cancel=cancel,
+                peak_channels=peak,
+            )
+            keep = ~np.isin(self.spikes.channels, peak)
+            others = SpikeIndex(
+                self.spikes.times[keep],
+                self.spikes.channels[keep],
+                self.spikes.amplitudes[keep],
+                self.spikes.artifact[keep],
+            )
+            if others.n_spikes and subset.n_spikes:
+                merged = SpikeIndex(
+                    np.concatenate([others.times, subset.times]),
+                    np.concatenate([others.channels, subset.channels]),
+                    np.concatenate([others.amplitudes, subset.amplitudes]),
+                    np.concatenate([others.artifact, subset.artifact]),
+                )
+            elif subset.n_spikes:
+                merged = subset
+            else:
+                merged = others
+            if np.any(self.review_labels):
+                if progress is not None:
+                    progress(0.75, "Applying good and bad examples")
+                spikes = refine_with_review(
+                    signal,
+                    merged,
+                    self.review_times,
+                    self.review_channels,
+                    self.review_labels,
+                    self.settings,
+                    noise_mad,
+                    progress=progress,
+                    cancel=cancel,
+                    bad_scope=self.review_bad,
+                    good_scope=self.review_good,
+                    limit_channels=peak,
+                )
+            else:
+                spikes = merged
+        np.savez(
+            cache.spikes_path,
+            times=spikes.times,
+            channels=spikes.channels,
+            amplitudes=spikes.amplitudes,
+            artifact=spikes.artifact,
+        )
+        np.save(cache.noise_path, noise_mad)
+        np.save(cache.whitener_path, whitener)
+        # Keep detect_base; only the reviewed detect result and later stages change.
+        manifest = cache.load_manifest()
+        manifest.pop("detect", None)
+        cache.save_manifest(manifest)
+        cache.invalidate_from("sort")
+        self.spikes = spikes
+        self.noise_mad = noise_mad
+        self.whitener = whitener
+        if progress is not None:
+            progress(1.0, f"Detected {spikes.clean().n_spikes} spikes")
+        return spikes
+
     def preview_channel(
         self,
         channel: int,

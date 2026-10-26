@@ -53,11 +53,15 @@ def detect_traces(
     noise_mad: np.ndarray | None = None,
     progress: Progress | None = None,
     cancel: CancelToken | None = None,
+    peak_channels: np.ndarray | None = None,
 ) -> tuple[SpikeIndex, np.ndarray, np.ndarray]:
     """Detect spikes in a filtered ``(n_samples, n_channels)`` array or memmap.
 
     ``data`` is in microvolts after bandpass and referencing. Whitening, when
     enabled, is applied per chunk and is not written back.
+
+    When ``peak_channels`` is set, only those channels are searched for peaks;
+    neighbors on other channels can still provide spatial support.
     """
     fs = float(settings.sampling_rate or 1.0)
     mask = np.asarray(mask, dtype=bool) | ~probe.present
@@ -102,6 +106,12 @@ def detect_traces(
     shape_win = _ms(settings.biphasic_window_ms, fs)
     coincidence = _ms(settings.artifact_coincidence_ms, fs)
     blank = _ms(settings.artifact_blank_ms, fs)
+    peak_mask = None
+    if peak_channels is not None:
+        peak_mask = np.zeros(data.shape[1], dtype=bool)
+        for channel in np.asarray(peak_channels, dtype=int):
+            if 0 <= int(channel) < peak_mask.size:
+                peak_mask[int(channel)] = True
 
     times_all: list[np.ndarray] = []
     channels_all: list[np.ndarray] = []
@@ -136,6 +146,7 @@ def detect_traces(
             artifact_level=float(settings.artifact_mad) * noise_mad,
             coincidence=coincidence,
             blank=blank,
+            peak_mask=peak_mask,
         )
         times_all.append(local[0])
         channels_all.append(local[1])
@@ -171,6 +182,14 @@ def detect_traces(
             progress=progress,
             cancel=cancel,
         )
+    if peak_mask is not None and spikes.n_spikes:
+        keep = peak_mask[np.asarray(spikes.channels, dtype=int)]
+        spikes = SpikeIndex(
+            spikes.times[keep],
+            spikes.channels[keep],
+            spikes.amplitudes[keep],
+            spikes.artifact[keep],
+        )
     return spikes, np.asarray(noise_mad, dtype=np.float64), np.asarray(whitener, dtype=np.float32)
 
 
@@ -196,6 +215,7 @@ def _detect_window(
     artifact_level: np.ndarray,
     coincidence: int,
     blank: int,
+    peak_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     artifacts = _artifact_samples(
         amplitude,
@@ -211,6 +231,8 @@ def _detect_window(
     flags: list[bool] = []
     n_channels = amplitude.shape[1]
     for channel in range(n_channels):
+        if peak_mask is not None and not peak_mask[channel]:
+            continue
         if mask[channel] or not np.isfinite(level[channel]):
             continue
         trace = detection[:, channel]

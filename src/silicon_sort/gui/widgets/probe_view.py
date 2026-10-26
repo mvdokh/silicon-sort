@@ -7,7 +7,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QWidget
 
-from silicon_sort.gui.widgets.plot_style import rest_range, style_plot
+from silicon_sort.gui.widgets.plot_style import hide_axes, rest_range, show_axes, style_plot
 
 
 class ProbeMap(pg.PlotWidget):
@@ -19,6 +19,7 @@ class ProbeMap(pg.PlotWidget):
         style_plot(self)
         self.setLabel("bottom", "x", units="µm")
         self.setLabel("left", "y", units="µm")
+        hide_axes(self)
         self.scatter = pg.ScatterPlotItem(pxMode=True, size=14)
         self.addItem(self.scatter)
         self.positions = np.zeros((0, 2), dtype=float)
@@ -47,6 +48,7 @@ class ProbeMap(pg.PlotWidget):
                 brushes.append(pg.mkBrush("#6ea8fe"))
         self.scatter.setData(x=self.positions[:, 0], y=self.positions[:, 1], brush=brushes, pen=pg.mkPen("#111"))
         if n_channels:
+            show_axes(self)
             self.setXRange(float(self.positions[:, 0].min()) - 40, float(self.positions[:, 0].max()) + 40, padding=0)
             self.setYRange(float(self.positions[:, 1].min()) - 40, float(self.positions[:, 1].max()) + 40, padding=0)
         else:
